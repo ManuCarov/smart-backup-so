@@ -1,0 +1,32 @@
+# ==========================================
+# Archivos ignorados para smart-backup-so
+# ==========================================
+
+# Binarios y archivos objeto compilados
+*.o
+backup_EAFITos
+test_prueba
+
+# Archivos de log generados por el sistema
+*.log
+smart_backup.log
+
+# Archivos de prueba (Makefile y Benchmark)
+src_test/
+dest_test/
+test_file.txt
+test_file_backup.txt
+bench_*.bin
+
+# Binarios y salidas de las pruebas de apoyo (Benchmarks)
+apoyoTematico/lib_io
+apoyoTematico/syscall_io
+apoyoTematico/syscall_buffered
+apoyoTematico/output_lib.txt
+apoyoTematico/output_syscall.txt
+
+# Entornos de desarrollo y archivos de sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store

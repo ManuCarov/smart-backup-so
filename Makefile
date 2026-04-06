@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g
 TARGET = backup_EAFITos
-SRC = backup.c
+SRC = backup.c backup_engine.c
 
 # Regla por defecto (compila el programa principal)
 all: $(TARGET)

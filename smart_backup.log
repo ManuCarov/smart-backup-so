@@ -1,1 +1,7 @@
 [2026-04-04 12:46:12] [INFO ] Copia exitosa: 'origen.txt' -> 'destino.txt' (34 bytes)
+[2026-04-06 16:07:08] [INFO ] Copia exitosa: 'test_file.txt' -> 'test_file_backup.txt' (15 bytes)
+[2026-04-06 16:07:08] [INFO ] Directorio creado: 'dest_test'
+[2026-04-06 16:07:08] [INFO ] Copia exitosa: 'src_test/archivo1.txt' -> 'dest_test/archivo1.txt' (37 bytes)
+[2026-04-06 16:07:08] [INFO ] Copia exitosa: 'src_test/archivo2.txt' -> 'dest_test/archivo2.txt' (20 bytes)
+[2026-04-06 16:07:08] [INFO ] Directorio creado: 'dest_test/subcarpeta'
+[2026-04-06 16:07:08] [INFO ] Copia exitosa: 'src_test/subcarpeta/archivo3.txt' -> 'dest_test/subcarpeta/archivo3.txt' (22 bytes)

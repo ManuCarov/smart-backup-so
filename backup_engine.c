@@ -292,16 +292,33 @@ int sys_smart_copy_dir(const char *src, const char *dest,
     }
 
     /* --- 3. Crear directorio destino con mkdir() --- */
-    mode_t dir_mode = (flags & SCOPY_PRESERVE) ? st_src.st_mode : 0755;
+    /* 1. Limpiar bits de tipo (S_IFDIR) con máscara 07777 */
+    mode_t final_mode = (flags & SCOPY_PRESERVE) ? (st_src.st_mode & 07777) : 0755;
+    
+    /* 2. Forzar R/W/X al dueño (S_IRWXU) temporalmente para poder copiar archivos dentro */
+    mode_t temp_mode = (flags & SCOPY_PRESERVE) ? (final_mode | S_IRWXU) : final_mode;
 
-    if (mkdir(dest, dir_mode) == -1) {
+    /* Compatibilidad multiplataforma: Windows (MinGW) solo acepta 1 argumento en mkdir */
+#ifdef _WIN32
+    if (mkdir(dest) == -1) {
+#else
+    if (mkdir(dest, temp_mode) == -1) {
+#endif
         if (errno != EEXIST) {
             snprintf(log_msg, sizeof(log_msg),
                      "mkdir() falló en '%s': %s", dest, strerror(errno));
             log_operation("ERROR", log_msg);
             return SC_ERR_MKDIR;
         }
-        /* EEXIST es aceptable si el destino ya existe */
+        
+        /* EEXIST es aceptable SOLO si el destino es efectivamente un directorio */
+        struct stat st_dest;
+        if (stat(dest, &st_dest) == 0 && !S_ISDIR(st_dest.st_mode)) {
+            snprintf(log_msg, sizeof(log_msg),
+                     "Fallo: El destino '%s' ya existe y NO es un directorio", dest);
+            log_operation("ERROR", log_msg);
+            return SC_ERR_MKDIR;
+        }
     } else {
         if (stats != NULL) stats->dirs_created++;
         if (flags & SCOPY_VERBOSE) {
@@ -335,10 +352,19 @@ int sys_smart_copy_dir(const char *src, const char *dest,
         }
 
         /* Construir rutas completas de origen y destino */
-        snprintf(path_src,  sizeof(path_src),
-                 "%s/%s", src,  entry->d_name);
-        snprintf(path_dest, sizeof(path_dest),
-                 "%s/%s", dest, entry->d_name);
+        int src_len = snprintf(path_src,  sizeof(path_src),
+                               "%s/%s", src,  entry->d_name);
+        int dest_len = snprintf(path_dest, sizeof(path_dest),
+                                "%s/%s", dest, entry->d_name);
+
+        /* Validar si la ruta superó MAX_PATH_LEN y fue truncada */
+        if (src_len >= sizeof(path_src) || dest_len >= sizeof(path_dest)) {
+            snprintf(log_msg, sizeof(log_msg),
+                     "Ruta demasiado larga ignorada: '%s/%s'", src, entry->d_name);
+            log_operation("WARN", log_msg);
+            if (stats != NULL) stats->files_failed++;
+            continue;
+        }
 
         /* lstat() para detectar el tipo sin seguir enlaces simbólicos */
         struct stat st_entry;
@@ -374,6 +400,11 @@ int sys_smart_copy_dir(const char *src, const char *dest,
 
     /* --- 6. Cerrar el directorio --- */
     closedir(dir);
+
+    /* --- 7. Restaurar permisos finales si los forzamos temporalmente --- */
+    if (flags & SCOPY_PRESERVE) {
+        chmod(dest, final_mode);
+    }
 
     return ret;
 }

@@ -7,119 +7,117 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <errno.h>
+#include <time.h>
+#include <sys/time.h>
 
-#define BUFFER_SIZE 4096
+#include "smart_copy.h"
 
-// Función para copiar un archivo usando System Calls
-void copy_file(const char *src, const char *dest) {
-    int fd_src, fd_dest;
-    ssize_t bytes_read, bytes_written;
-    char buffer[BUFFER_SIZE];
-    struct stat st;
+/* =========================================================================
+ * SECCIÓN DE BENCHMARK (Comparativa de Rendimiento)
+ * ========================================================================= */
 
-    // Obtener los permisos del archivo original
-    if (stat(src, &st) == -1) {
-        perror("Error al obtener los stats del archivo de origen");
-        return;
-    }
-
-    // System calls: open (lectura)
-    fd_src = open(src, O_RDONLY);
-    if (fd_src < 0) {
-        perror("Error al abrir el archivo de origen");
-        return;
-    }
-
-    // System calls: open (escritura, creación, truncado) manteniendo los permisos
-    fd_dest = open(dest, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode);
-    if (fd_dest < 0) {
-        perror("Error al crear/abrir el archivo de destino");
-        close(fd_src);
-        return;
-    }
-
-    // System calls: read y write en un ciclo
-    while ((bytes_read = read(fd_src, buffer, BUFFER_SIZE)) > 0) {
-        bytes_written = write(fd_dest, buffer, bytes_read);
-        if (bytes_written != bytes_read) {
-            perror("Error al escribir en el archivo de destino");
-            break;
-        }
-    }
-
-    if (bytes_read < 0) {
-        perror("Error al leer el archivo de origen");
-    } else {
-        printf("[OK] Archivo respaldado: %s -> %s\n", src, dest);
-    }
-
-    // System calls: close
-    close(fd_src);
-    close(fd_dest);
+/* Obtener tiempo en segundos con alta precisión (Wall-clock time) */
+double get_current_time() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
 }
 
-// Función para copiar un directorio de forma recursiva
-void copy_directory(const char *src, const char *dest) {
-    struct stat st;
+/* Copia usando la librería estándar de C (stdio.h) */
+int std_copy(const char *src, const char *dest) {
+    FILE *in = fopen(src, "rb");
+    if (!in) return -1;
     
-    // System calls: stat para obtener información
-    if (stat(src, &st) == -1) {
-        perror("Error al obtener stats del directorio de origen");
+    FILE *out = fopen(dest, "wb");
+    if (!out) {
+        fclose(in);
+        return -1;
+    }
+
+    char buffer[BUFFER_SIZE];
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, in)) > 0) {
+        fwrite(buffer, 1, bytes_read, out);
+    }
+
+    fclose(in);
+    fclose(out);
+    return 0;
+}
+
+/* Generar archivo dummy de tamaño específico en disco */
+void create_dummy_file(const char* filename, size_t size) {
+    FILE *f = fopen(filename, "wb");
+    if (!f) {
+        perror("Error creando archivo dummy");
         return;
     }
+    char buffer[BUFFER_SIZE];
+    memset(buffer, 'A', BUFFER_SIZE);
+    size_t written = 0;
+    while (written < size) {
+        size_t to_write = (size - written > BUFFER_SIZE) ? BUFFER_SIZE : (size - written);
+        fwrite(buffer, 1, to_write, f);
+        written += to_write;
+    }
+    fclose(f);
+}
 
-    // System calls: mkdir para crear el directorio de backup
-    if (mkdir(dest, st.st_mode) == -1) {
-        if (errno != EEXIST) {
-            perror("Error al crear el directorio de destino");
-            return;
-        }
-    } else {
-        printf("[OK] Directorio creado: %s\n", dest);
+/* Ejecutar la suite de pruebas automatizada */
+void run_benchmark() {
+    printf("\n==============================================================\n");
+    printf("       BENCHMARK DE RENDIMIENTO: SysCall vs Librería C        \n");
+    printf("==============================================================\n");
+    printf("Generando archivos de prueba (1KB, 1MB, 1GB)... \n");
+    printf("(El archivo de 1GB puede tardar unos segundos)\n\n");
+
+    size_t size_1KB = 1024;
+    size_t size_1MB = 1024 * 1024;
+    size_t size_1GB = 1024 * 1024 * 1024;
+
+    create_dummy_file("bench_1KB.bin", size_1KB);
+    create_dummy_file("bench_1MB.bin", size_1MB);
+    create_dummy_file("bench_1GB.bin", size_1GB);
+
+    struct {
+        const char* name;
+        const char* filename;
+    } tests[] = {
+        {"1 KB", "bench_1KB.bin"},
+        {"1 MB", "bench_1MB.bin"},
+        {"1 GB", "bench_1GB.bin"}
+    };
+
+    printf("%-10s | %-20s | %-20s\n", "Tamaño", "sys_smart_copy (s)", "stdio (fread/write)");
+    printf("--------------------------------------------------------------\n");
+
+    for (int i = 0; i < 3; i++) {
+        double start, end, time_syscall, time_stdio;
+        
+        /* 1. Test Syscall (Nuestro motor crudo) */
+        start = get_current_time();
+        sys_smart_copy(tests[i].filename, "bench_out_sys.bin", SCOPY_OVERWRITE, NULL);
+        end = get_current_time();
+        time_syscall = end - start;
+
+        /* 2. Test Stdio (Librería estándar C) */
+        start = get_current_time();
+        std_copy(tests[i].filename, "bench_out_std.bin");
+        end = get_current_time();
+        time_stdio = end - start;
+
+        printf("%-10s | %-20.6f | %-20.6f\n", tests[i].name, time_syscall, time_stdio);
     }
 
-    // System calls: opendir para listar el contenido (internamente usa open/getdents)
-    DIR *dir = opendir(src);
-    if (!dir) {
-        perror("Error al abrir el directorio de origen");
-        return;
-    }
-
-    struct dirent *entry;
-    char next_src[1024];
-    char next_dest[1024];
-
-    // Recorrer el directorio
-    while ((entry = readdir(dir)) != NULL) {
-        // Ignorar "." y ".."
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-
-        // Construir rutas completas
-        snprintf(next_src, sizeof(next_src), "%s/%s", src, entry->d_name);
-        snprintf(next_dest, sizeof(next_dest), "%s/%s", dest, entry->d_name);
-
-        struct stat next_st;
-        // System calls: lstat para detectar el tipo de archivo y evitar enlaces simbólicos que formen ciclos
-        if (lstat(next_src, &next_st) == -1) {
-            perror("Error al obtener los stats de un elemento");
-            continue;
-        }
-
-        if (S_ISDIR(next_st.st_mode)) {
-            // Es un directorio, procedemos recursivamente
-            copy_directory(next_src, next_dest);
-        } else if (S_ISREG(next_st.st_mode)) {
-            // Es un archivo regular
-            copy_file(next_src, next_dest);
-        } else {
-            // Otros como links simbólicos, character devices, etc. se ignoran en este script simple
-            printf("[INFO] Elemento ignorado (especial o link): %s\n", next_src);
-        }
-    }
-
-    closedir(dir);
+    printf("==============================================================\n");
+    printf("Limpiando disco...\n");
+    
+    remove("bench_1KB.bin");
+    remove("bench_1MB.bin");
+    remove("bench_1GB.bin");
+    remove("bench_out_sys.bin");
+    remove("bench_out_std.bin");
+    printf("Benchmark finalizado.\n\n");
 }
 
 void print_help(const char *prog_name) {
@@ -132,6 +130,7 @@ void print_help(const char *prog_name) {
     printf("Opciones:\n");
     printf("  -h, --help    Muestra esta ayuda.\n");
     printf("  -b, --backup  Realizar respaldo un archivo o directorio recursivamente.\n");
+    printf("  -p, --perf    Ejecutar benchmark de rendimiento (1KB, 1MB, 1GB).\n");
     printf("\nEjemplos:\n");
     printf("  %s -b archivo.txt backup_archivo.txt\n", prog_name);
     printf("  %s -b /home/user/documentos /tmp/backup_documentos\n\n", prog_name);
@@ -145,6 +144,11 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
         print_help(argv[0]);
+        return EXIT_SUCCESS;
+    }
+
+    if (strcmp(argv[1], "-p") == 0 || strcmp(argv[1], "--perf") == 0) {
+        run_benchmark();
         return EXIT_SUCCESS;
     }
 
@@ -164,16 +168,30 @@ int main(int argc, char *argv[]) {
             return EXIT_FAILURE;
         }
 
+        /* Configurar el motor de copia: Sobrescribir, preservar permisos, verboso y log */
+        CopyStats stats = {0, 0, 0, 0};
+        int flags = SCOPY_OVERWRITE | SCOPY_PRESERVE | SCOPY_VERBOSE | SCOPY_LOG;
+        int ret = SC_OK;
+
         if (S_ISDIR(st.st_mode)) {
             printf("--- Iniciando respaldo del directorio '%s' en '%s' ---\n", src, dest);
-            copy_directory(src, dest);
+            ret = sys_smart_copy_dir(src, dest, flags, &stats);
             printf("--- Respaldo completado ---\n");
         } else if (S_ISREG(st.st_mode)) {
             printf("--- Iniciando respaldo del archivo '%s' en '%s' ---\n", src, dest);
-            copy_file(src, dest);
+            ret = sys_smart_copy(src, dest, flags, &stats);
             printf("--- Respaldo completado ---\n");
         } else {
             fprintf(stderr, "Error: El origen no es válido. Debe ser carpeta o archivo.\n");
+            return EXIT_FAILURE;
+        }
+
+        /* Imprimir las métricas recolectadas por nuestro motor */
+        print_stats(&stats);
+
+        /* Validar si hubo algún problema reportado por el engine */
+        if (ret != SC_OK) {
+            fprintf(stderr, "\n[ATENCIÓN] El respaldo finalizó con errores (Código: %d)\n", ret);
             return EXIT_FAILURE;
         }
     } else {
