@@ -129,7 +129,7 @@ void print_help(const char *prog_name) {
     printf("llamadas al sistema de POSIX/Linux (open, read, write, close, mkdir, etc.).\n\n");
     printf("Opciones:\n");
     printf("  -h, --help    Muestra esta ayuda.\n");
-    printf("  -b, --backup  Realizar respaldo un archivo o directorio recursivamente.\n");
+    printf("  -b, --backup  Realiza el respaldo de un archivo o directorio recursivamente.\n");
     printf("  -p, --perf    Ejecutar benchmark de rendimiento (1KB, 1MB, 1GB).\n");
     printf("\nEjemplos:\n");
     printf("  %s -b archivo.txt backup_archivo.txt\n", prog_name);
