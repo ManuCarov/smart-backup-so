@@ -14,6 +14,7 @@ Una utilidad de copias de seguridad de alto rendimiento desarrollada en **C**. A
 4. **Tolerancia a Fallos:** Manejo robusto de escrituras parciales, detección de disco lleno (`ENOSPC`) y validación de rutas largas.
 5. **Sistema de Log:** Registro de operaciones con marcas de tiempo en `smart_backup.log`, simulando el comportamiento `dmesg` del kernel.
 6. **Benchmark Integrado:** Suite de pruebas para comparar el rendimiento real frente a las funciones convencionales de la librería C.
+7. **Compresión al Vuelo:** Integración de algoritmos de entropía (RLE, LZ77) adaptados para operar sobre memoria RAM (Framing) sin usar `stdio.h`.
 
 > 💡 **Nota:** Para conocer la arquitectura profunda, el manejo de memoria (SysCalls) y los códigos de error del motor, consulta el archivo [DETALLES_TECNICOS.md](DETALLES_TECNICOS.md).
 
@@ -49,6 +50,9 @@ La herramienta se ejecuta desde la interfaz de línea de comandos (Terminal). Su
 | :--- | :--- |
 | `-h`, `--help` | Muestra la pantalla de ayuda con ejemplos. |
 | `-b`, `--backup` | Realiza el respaldo de un archivo o directorio. |
+| `-c`, `--comp` | Comprime el respaldo al vuelo (requiere `-b`). |
+| `-r`, `--restore` | Restaura/descomprime un respaldo (requiere `-b`). |
+| `-a`, `--algo` | Algoritmo de compresión a utilizar (1: TurboQuant+LZ77, 2: LZ77, 3: RLE). Por defecto: 1. |
 | `-p`, `--perf` | Ejecuta el Benchmark de rendimiento de Entrada/Salida. |
 
 ### Ejemplos de Uso Práctico:

@@ -109,7 +109,7 @@ int compress_file(FILE *in, FILE *out, int algorithm) {
 
     // Asumimos un archivo binario que representa una matriz de floats
     size_t elements = file_size / sizeof(float);
-    float *matrix = (float *)malloc(file_size);
+    float *matrix = (float *)calloc(1, file_size); // calloc evita lectura de memoria basura
     uint8_t *raw_bytes = (uint8_t *)matrix; // Puntero para tratar la matriz como bytes crudos
 
     if (!matrix) {

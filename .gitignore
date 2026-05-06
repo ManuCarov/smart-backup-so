@@ -17,6 +17,7 @@ dest_test/
 test_file.txt
 test_file_backup.txt
 bench_*.bin
+Archivos/
 
 # Binarios y salidas de las pruebas de apoyo (Benchmarks)
 apoyoTematico/lib_io

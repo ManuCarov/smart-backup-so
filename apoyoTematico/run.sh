@@ -17,12 +17,11 @@ echo "--------------------------------------------------------"
 
 echo "--------------------------------------------------------"
 echo "Archivos de salida generados:"
-ls -lh output_lib.txt output_syscall.txt output_syscall_buf.txt
+ls -lh Archivos/output_lib.txt Archivos/output_syscall.txt Archivos/output_syscall_buf.txt
 echo ""
 echo "Primeros 5 bytes de cada archivo:"
-echo -n "  output_lib.txt      -> "; head -c 5 output_lib.txt; echo
-echo -n "  output_syscall.txt  -> "; head -c 5 output_syscall.txt; echo
-echo -n "  output_syscall_buf.txt -> "; head -c 5 output_syscall_buf.txt; echo
+echo -n "  output_lib.txt      -> "; head -c 5 Archivos/output_lib.txt; echo
+echo -n "  output_syscall.txt  -> "; head -c 5 Archivos/output_syscall.txt; echo
+echo -n "  output_syscall_buf.txt -> "; head -c 5 Archivos/output_syscall_buf.txt; echo
 echo "--------------------------------------------------------"
 echo "Prueba terminada. Archivos conservados."
-

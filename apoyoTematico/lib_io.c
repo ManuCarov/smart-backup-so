@@ -1,11 +1,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #define BYTES_TO_WRITE 1000000 // 1 Millón de bytes
 
 int main() {
-    FILE *file = fopen("output_lib.txt", "w");
+    #if defined(_WIN32)
+        mkdir("Archivos");
+    #else
+        mkdir("Archivos", 0777);
+    #endif
+
+    FILE *file = fopen("Archivos/output_lib.txt", "w");
     if (file == NULL) {
         perror("Error abriendo el archivo");
         return 1;
