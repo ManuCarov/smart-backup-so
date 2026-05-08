@@ -3,13 +3,20 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #define BYTES_TO_WRITE 1000000 // 1 Millón de bytes
 
 int main() {
+    #if defined(_WIN32)
+        mkdir("Archivos");
+    #else
+        mkdir("Archivos", 0777);
+    #endif
+
     // Abrimos archivo con O_WRONLY (solo escritura), O_CREAT (crear si no existe), 
     // O_TRUNC (truncar modo) y permisos 0644
-    int fd = open("output_syscall.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open("Archivos/output_syscall.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd == -1) {
         perror("Error abriendo el archivo");
         return 1;

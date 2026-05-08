@@ -25,6 +25,7 @@
 #include <string.h>      /* strerror, strcmp, snprintf                  */
 #include <stdio.h>       /* printf, fprintf, snprintf (solo para logs)  */
 #include <time.h>        /* time, localtime, strftime (timestamps)      */
+#include <stdint.h>      /* Tipos enteros para compresión (uint8_t)     */
 
 /* =========================================================================
  * FUNCIÓN AUXILIAR: log_operation
@@ -62,6 +63,108 @@ void log_operation(const char *level, const char *message) {
     }
 
     close(fd_log);
+}
+
+/* =========================================================================
+ * FUNCIONES DE COMPRESIÓN EN MEMORIA (In-memory Compression)
+ * ========================================================================= */
+
+/**
+ * compress_rle_buffer — Comprime un bloque de datos usando Run-Length Encoding.
+ * En lugar de usar fwrite (stdio), trabaja puramente con buffers en memoria RAM
+ * para mantener compatibilidad con las SysCalls crudas del motor.
+ *
+ * @param in_data   Buffer con los datos originales leídos del disco.
+ * @param in_size   Cantidad de bytes reales en in_data.
+ * @param out_data  Buffer donde se escribirán los datos comprimidos.
+ * @return          Cantidad de bytes que resultaron de la compresión.
+ */
+static size_t compress_rle_buffer(const char *in_data, size_t in_size, char *out_data) {
+    size_t i = 0, out_size = 0;
+    while (i < in_size) {
+        unsigned char count = 1;
+        /* Contar bytes repetidos consecutivos (máx 255 por bloque) */
+        while (i + count < in_size && in_data[i] == in_data[i + count] && count < 255) {
+            count++;
+        }
+        out_data[out_size++] = (char)count;     /* Guardar cantidad */
+        out_data[out_size++] = in_data[i];      /* Guardar el byte */
+        i += count;
+    }
+    return out_size;
+}
+
+static size_t decompress_rle_buffer(const char *in_data, size_t in_size, char *out_data) {
+    size_t i = 0, out_size = 0;
+    while (i + 1 < in_size) {
+        unsigned char count = (unsigned char)in_data[i++];
+        unsigned char val = (unsigned char)in_data[i++];
+        for (int j = 0; j < count; j++) out_data[out_size++] = val;
+    }
+    return out_size;
+}
+
+#define LZ77_WINDOW_SIZE 4095
+#define LZ77_LOOKAHEAD_SIZE 15
+
+static size_t compress_lz77_buffer(const char *in_data, size_t in_size, char *out_data) {
+    size_t i = 0, out_size = 0;
+    const uint8_t *data = (const uint8_t *)in_data;
+    uint8_t *out = (uint8_t *)out_data;
+
+    while (i < in_size) {
+        int match_length = 0, match_offset = 0;
+        int window_start = (i > LZ77_WINDOW_SIZE) ? i - LZ77_WINDOW_SIZE : 0;
+
+        for (size_t j = window_start; j < i; j++) {
+            int len = 0;
+            while (len < LZ77_LOOKAHEAD_SIZE && i + len < in_size && data[j + len] == data[i + len]) len++;
+            if (len > match_length) {
+                match_length = len;
+                match_offset = (int)(i - j);
+            }
+        }
+
+        if (match_length >= 3) {
+            out[out_size++] = 1; /* flag match */
+            uint16_t token = (match_offset << 4) | (match_length & 0x0F);
+            out[out_size++] = token & 0xFF;         /* byte bajo */
+            out[out_size++] = (token >> 8) & 0xFF;  /* byte alto */
+            i += match_length;
+        } else {
+            out[out_size++] = 0; /* flag literal */
+            out[out_size++] = data[i];
+            i++;
+        }
+    }
+    return out_size;
+}
+
+static size_t decompress_lz77_buffer(const char *in_data, size_t in_size, char *out_data) {
+    size_t i = 0, out_size = 0;
+    const uint8_t *data = (const uint8_t *)in_data;
+    uint8_t *out = (uint8_t *)out_data;
+
+    while (i < in_size) {
+        uint8_t flag = data[i++];
+        if (flag == 1) {
+            if (i + 1 >= in_size) break; /* Seguridad contra lectura fuera de límites */
+            uint16_t token = data[i++];
+            token |= (data[i++] << 8);
+            int match_offset = token >> 4;
+            int match_length = token & 0x0F;
+            for (int j = 0; j < match_length; j++) {
+                if (out_size >= match_offset) {
+                    out[out_size] = out[out_size - match_offset];
+                    out_size++;
+                }
+            }
+        } else {
+            if (i >= in_size) break;
+            out[out_size++] = data[i++];
+        }
+    }
+    return out_size;
 }
 
 /* =========================================================================
@@ -103,7 +206,7 @@ void print_stats(const CopyStats *stats) {
  *  7. Actualizar CopyStats si no es NULL
  */
 int sys_smart_copy(const char *src, const char *dest,
-                   int flags, CopyStats *stats) {
+                   int flags, int algo, CopyStats *stats) {
 
     /* --- 1. Validar que los punteros no sean NULL --- */
     if (src == NULL || dest == NULL) {
@@ -178,36 +281,105 @@ int sys_smart_copy(const char *src, const char *dest,
 
     /* --- 5. Bucle de copia con buffer de página (4 KB) --- */
     char buffer[BUFFER_SIZE];
+    /* El peor caso de RLE/LZ77 duplica el tamaño si no hay repeticiones */
+    char comp_buffer[BUFFER_SIZE * 2]; 
+    
     ssize_t bytes_read;
     ssize_t bytes_written;
     off_t   total_bytes = 0;
+    off_t   current_offset = 0;
+    off_t   total_src_size = st_src.st_size;
     int     ret = SC_OK;
 
-    while ((bytes_read = read(fd_src, buffer, BUFFER_SIZE)) > 0) {
-
-        /* Escribir exactamente los bytes leídos */
-        bytes_written = write(fd_dest, buffer, (size_t)bytes_read);
-
-        if (bytes_written < 0) {
-            /* Detectar disco lleno específicamente */
-            if (errno == ENOSPC) {
-                log_operation("ERROR", "Disco lleno durante la escritura");
+    while (1) {
+        if (flags & SCOPY_RESTORE) {
+            /* --- MODO RESTAURACIÓN (Lectura de bloques entrelazados) --- */
+            uint8_t header[4];
+            bytes_read = read(fd_src, header, 4);
+            if (bytes_read == 0) break; /* Fin de archivo */
+            if (bytes_read < 4) { ret = SC_ERR_READ; break; } /* Archivo corrupto */
+            current_offset += bytes_read;
+            
+            uint16_t orig_size = (uint16_t)header[0] | ((uint16_t)header[1] << 8);
+            uint16_t comp_size = (uint16_t)header[2] | ((uint16_t)header[3] << 8);
+            
+            bytes_read = read(fd_src, comp_buffer, comp_size);
+            if (bytes_read != comp_size) { ret = SC_ERR_READ; break; }
+            current_offset += bytes_read;
+            
+            size_t decomp_size = 0;
+            if (algo == ALG_RLE) {
+                decomp_size = decompress_rle_buffer(comp_buffer, comp_size, buffer);
+            } else if (algo == ALG_LZ77 || algo == ALG_TURBOQUANT_LZ) {
+                decomp_size = decompress_lz77_buffer(comp_buffer, comp_size, buffer);
             } else {
-                snprintf(log_msg, sizeof(log_msg),
-                         "write() falló en '%s': %s", dest, strerror(errno));
-                log_operation("ERROR", log_msg);
+                memcpy(buffer, comp_buffer, comp_size);
+                decomp_size = comp_size;
             }
-            ret = SC_ERR_WRITE;
-            break;
-
-        } else if (bytes_written != bytes_read) {
-            /* Escritura parcial — situación anómala */
-            log_operation("WARN", "Escritura parcial detectada");
-            ret = SC_ERR_WRITE;
-            break;
+            
+            bytes_written = write(fd_dest, buffer, decomp_size);
+            if (bytes_written < 0) { ret = SC_ERR_WRITE; break; }
+            total_bytes += bytes_written;
+            
+        } else {
+            /* --- MODO NORMAL O COMPRESIÓN --- */
+            bytes_read = read(fd_src, buffer, BUFFER_SIZE);
+            if (bytes_read == 0) break; /* Fin de archivo */
+            if (bytes_read < 0) { ret = SC_ERR_READ; break; }
+            current_offset += bytes_read;
+            
+            if (flags & SCOPY_COMPRESS) {
+                size_t comp_size = 0;
+                if (algo == ALG_RLE) {
+                    comp_size = compress_rle_buffer(buffer, (size_t)bytes_read, comp_buffer);
+                } else if (algo == ALG_LZ77 || algo == ALG_TURBOQUANT_LZ) {
+                    /* Mapeamos TurboQuant a LZ77 por ahora al trabajar con streams binarios crudos */
+                    comp_size = compress_lz77_buffer(buffer, (size_t)bytes_read, comp_buffer);
+                } else {
+                    memcpy(comp_buffer, buffer, bytes_read);
+                    comp_size = bytes_read;
+                }
+                
+                /* Escribir cabecera (Framing) para poder identificar tamaño al restaurar */
+                uint8_t header[4];
+                header[0] = (uint8_t)(bytes_read & 0xFF);
+                header[1] = (uint8_t)((bytes_read >> 8) & 0xFF);
+                header[2] = (uint8_t)(comp_size & 0xFF);
+                header[3] = (uint8_t)((comp_size >> 8) & 0xFF);
+                write(fd_dest, header, 4);
+                
+                bytes_written = write(fd_dest, comp_buffer, comp_size);
+            } else {
+                bytes_written = write(fd_dest, buffer, (size_t)bytes_read);
+            }
+            
+            if (bytes_written < 0) {
+                if (errno == ENOSPC) log_operation("ERROR", "Disco lleno durante la escritura");
+                ret = SC_ERR_WRITE;
+                break;
+            }
+            total_bytes += bytes_written;
         }
 
-        total_bytes += bytes_written;
+        /* --- Barra de Progreso (Se actualiza por cada bloque) --- */
+        if ((flags & SCOPY_VERBOSE) && total_src_size > 0) {
+            int percent = (int)((current_offset * 100) / total_src_size);
+            if (percent > 100) percent = 100;
+            printf("\r[PROGRESO] %3d%% [", percent);
+            int bar_width = 40;
+            int pos = (percent * bar_width) / 100;
+            for (int p = 0; p < bar_width; ++p) {
+                if (p < pos) printf("=");
+                else if (p == pos) printf(">");
+                else printf(" ");
+            }
+            printf("] %lld / %lld B", (long long)current_offset, (long long)total_src_size);
+            fflush(stdout); /* Forzar impresión inmediata en pantalla */
+        }
+    }
+
+    if ((flags & SCOPY_VERBOSE) && total_src_size > 0) {
+        printf("\n"); /* Salto de línea para no sobreescribir la barra al terminar */
     }
 
     /* Verificar si el bucle terminó por error de lectura */
@@ -227,6 +399,7 @@ int sys_smart_copy(const char *src, const char *dest,
         if (stats != NULL) {
             stats->files_copied++;
             stats->bytes_copied += total_bytes;
+            stats->original_bytes += st_src.st_size;
         }
         if (flags & SCOPY_VERBOSE) {
             printf("[OK]  %s  →  %s  (%lld bytes)\n",
@@ -266,7 +439,7 @@ int sys_smart_copy(const char *src, const char *dest,
  *  6. closedir()
  */
 int sys_smart_copy_dir(const char *src, const char *dest,
-                       int flags, CopyStats *stats) {
+                       int flags, int algo, CopyStats *stats) {
 
     /* --- 1. Validar punteros --- */
     if (src == NULL || dest == NULL) {
@@ -292,16 +465,33 @@ int sys_smart_copy_dir(const char *src, const char *dest,
     }
 
     /* --- 3. Crear directorio destino con mkdir() --- */
-    mode_t dir_mode = (flags & SCOPY_PRESERVE) ? st_src.st_mode : 0755;
+    /* 1. Limpiar bits de tipo (S_IFDIR) con máscara 07777 */
+    mode_t final_mode = (flags & SCOPY_PRESERVE) ? (st_src.st_mode & 07777) : 0755;
+    
+    /* 2. Forzar R/W/X al dueño (S_IRWXU) temporalmente para poder copiar archivos dentro */
+    mode_t temp_mode = (flags & SCOPY_PRESERVE) ? (final_mode | S_IRWXU) : final_mode;
 
-    if (mkdir(dest, dir_mode) == -1) {
+    /* Compatibilidad multiplataforma: Windows (MinGW) solo acepta 1 argumento en mkdir */
+#ifdef _WIN32
+    if (mkdir(dest) == -1) {
+#else
+    if (mkdir(dest, temp_mode) == -1) {
+#endif
         if (errno != EEXIST) {
             snprintf(log_msg, sizeof(log_msg),
                      "mkdir() falló en '%s': %s", dest, strerror(errno));
             log_operation("ERROR", log_msg);
             return SC_ERR_MKDIR;
         }
-        /* EEXIST es aceptable si el destino ya existe */
+        
+        /* EEXIST es aceptable SOLO si el destino es efectivamente un directorio */
+        struct stat st_dest;
+        if (stat(dest, &st_dest) == 0 && !S_ISDIR(st_dest.st_mode)) {
+            snprintf(log_msg, sizeof(log_msg),
+                     "Fallo: El destino '%s' ya existe y NO es un directorio", dest);
+            log_operation("ERROR", log_msg);
+            return SC_ERR_MKDIR;
+        }
     } else {
         if (stats != NULL) stats->dirs_created++;
         if (flags & SCOPY_VERBOSE) {
@@ -335,10 +525,19 @@ int sys_smart_copy_dir(const char *src, const char *dest,
         }
 
         /* Construir rutas completas de origen y destino */
-        snprintf(path_src,  sizeof(path_src),
-                 "%s/%s", src,  entry->d_name);
-        snprintf(path_dest, sizeof(path_dest),
-                 "%s/%s", dest, entry->d_name);
+        int src_len = snprintf(path_src,  sizeof(path_src),
+                               "%s/%s", src,  entry->d_name);
+        int dest_len = snprintf(path_dest, sizeof(path_dest),
+                                "%s/%s", dest, entry->d_name);
+
+        /* Validar si la ruta superó MAX_PATH_LEN y fue truncada */
+        if (src_len >= sizeof(path_src) || dest_len >= sizeof(path_dest)) {
+            snprintf(log_msg, sizeof(log_msg),
+                     "Ruta demasiado larga ignorada: '%s/%s'", src, entry->d_name);
+            log_operation("WARN", log_msg);
+            if (stats != NULL) stats->files_failed++;
+            continue;
+        }
 
         /* lstat() para detectar el tipo sin seguir enlaces simbólicos */
         struct stat st_entry;
@@ -353,12 +552,12 @@ int sys_smart_copy_dir(const char *src, const char *dest,
 
         if (S_ISDIR(st_entry.st_mode)) {
             /* Subdirectorio → recursión */
-            int sub_ret = sys_smart_copy_dir(path_src, path_dest, flags, stats);
+            int sub_ret = sys_smart_copy_dir(path_src, path_dest, flags, algo, stats);
             if (sub_ret != SC_OK) ret = sub_ret;
 
         } else if (S_ISREG(st_entry.st_mode)) {
             /* Archivo regular → copiar */
-            int file_ret = sys_smart_copy(path_src, path_dest, flags, stats);
+            int file_ret = sys_smart_copy(path_src, path_dest, flags, algo, stats);
             if (file_ret != SC_OK) ret = file_ret;
 
         } else {
@@ -374,6 +573,11 @@ int sys_smart_copy_dir(const char *src, const char *dest,
 
     /* --- 6. Cerrar el directorio --- */
     closedir(dir);
+
+    /* --- 7. Restaurar permisos finales si los forzamos temporalmente --- */
+    if (flags & SCOPY_PRESERVE) {
+        chmod(dest, final_mode);
+    }
 
     return ret;
 }
