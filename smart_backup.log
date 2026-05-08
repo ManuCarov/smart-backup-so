@@ -1,0 +1,12 @@
+[2026-04-04 12:46:12] [INFO ] Copia exitosa: 'origen.txt' -> 'destino.txt' (34 bytes)
+[2026-04-06 16:07:08] [INFO ] Copia exitosa: 'test_file.txt' -> 'test_file_backup.txt' (15 bytes)
+[2026-04-06 16:07:08] [INFO ] Directorio creado: 'dest_test'
+[2026-04-06 16:07:08] [INFO ] Copia exitosa: 'src_test/archivo1.txt' -> 'dest_test/archivo1.txt' (37 bytes)
+[2026-04-06 16:07:08] [INFO ] Copia exitosa: 'src_test/archivo2.txt' -> 'dest_test/archivo2.txt' (20 bytes)
+[2026-04-06 16:07:08] [INFO ] Directorio creado: 'dest_test/subcarpeta'
+[2026-04-06 16:07:08] [INFO ] Copia exitosa: 'src_test/subcarpeta/archivo3.txt' -> 'dest_test/subcarpeta/archivo3.txt' (22 bytes)
+[2026-04-27 15:59:49] [INFO ] Copia exitosa: 'original.bin' -> 'comprimido.bin' (600000 bytes)
+[2026-04-27 16:01:21] [INFO ] Copia exitosa: 'comprimido.bin' -> 'restaurado.bin' (400000 bytes)
+[2026-04-27 16:04:28] [INFO ] Copia exitosa: 'original.bin' -> 'backup_lz77.bin' (80764 bytes)
+[2026-04-27 16:05:01] [INFO ] Copia exitosa: 'backup_lz77.bin' -> 'restaurado.bin' (400000 bytes)
+[2026-04-27 16:05:17] [INFO ] Copia exitosa: 'ceros.bin' -> 'ceros_backup.bin' (3400 bytes)
