@@ -329,15 +329,29 @@ int sys_smart_copy(const char *src, const char *dest,
     while (1) {
         if (flags & SCOPY_RESTORE) {
             /* --- MODO RESTAURACIÓN (Lectura de bloques entrelazados) --- */
-            uint8_t header[4];
-            bytes_read = read(fd_src, header, 4);
+            uint8_t header[6];
+            bytes_read = read(fd_src, header, 6);
             if (bytes_read == 0) break; /* Fin de archivo */
-            if (bytes_read < 4) { ret = SC_ERR_READ; break; } /* Archivo corrupto */
+            
+            /* Validar firma de seguridad (Magic Number 'S', 'B') y longitud */
+            if (bytes_read < 6 || header[0] != 0x53 || header[1] != 0x42) { 
+                log_operation("ERROR", "Archivo no reconocido como respaldo comprimido válido");
+                ret = SC_ERR_READ; 
+                break; 
+            }
+            
             current_offset += bytes_read;
             
-            uint16_t orig_size = (uint16_t)header[0] | ((uint16_t)header[1] << 8);
-            uint16_t comp_size = (uint16_t)header[2] | ((uint16_t)header[3] << 8);
+            uint16_t orig_size = (uint16_t)header[2] | ((uint16_t)header[3] << 8);
+            uint16_t comp_size = (uint16_t)header[4] | ((uint16_t)header[5] << 8);
             
+            /* Prevención crítica de Buffer Overflow */
+            if (comp_size > BUFFER_SIZE * 2) {
+                log_operation("ERROR", "El tamaño del bloque reportado excede el límite seguro de memoria");
+                ret = SC_ERR_READ;
+                break;
+            }
+
             bytes_read = read(fd_src, comp_buffer, comp_size);
             if (bytes_read != comp_size) { ret = SC_ERR_READ; break; }
             current_offset += bytes_read;
@@ -380,12 +394,14 @@ int sys_smart_copy(const char *src, const char *dest,
                 }
                 
                 /* Escribir cabecera (Framing) para poder identificar tamaño al restaurar */
-                uint8_t header[4];
-                header[0] = (uint8_t)(bytes_read & 0xFF);
-                header[1] = (uint8_t)((bytes_read >> 8) & 0xFF);
-                header[2] = (uint8_t)(comp_size & 0xFF);
-                header[3] = (uint8_t)((comp_size >> 8) & 0xFF);
-                write(fd_dest, header, 4);
+                uint8_t header[6];
+                header[0] = 0x53; /* 'S' */
+                header[1] = 0x42; /* 'B' */
+                header[2] = (uint8_t)(bytes_read & 0xFF);
+                header[3] = (uint8_t)((bytes_read >> 8) & 0xFF);
+                header[4] = (uint8_t)(comp_size & 0xFF);
+                header[5] = (uint8_t)((comp_size >> 8) & 0xFF);
+                write(fd_dest, header, 6);
                 
                 if (flags & SCOPY_ENCRYPT) {
                     mem_encrypt_decrypt_xor((uint8_t *)comp_buffer, comp_size);
