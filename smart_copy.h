@@ -66,6 +66,9 @@
 /** Activar restauración/descompresión durante la copia */
 #define SCOPY_RESTORE      0x20
 
+/** Activar encriptaciÃ³n/desencriptaciÃ³n XOR simÃ©trica */
+#define SCOPY_ENCRYPT      0x40
+
 #define ALG_TURBOQUANT_LZ  1
 #define ALG_LZ77           2
 #define ALG_RLE            3

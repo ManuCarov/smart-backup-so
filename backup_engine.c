@@ -172,6 +172,21 @@ size_t decompress_lz77_buffer(const char *in_data, size_t in_size, char *out_dat
 }
 
 /* =========================================================================
+ * FUNCIONES DE ENCRIPTACIÓN / SEGURIDAD
+ * ========================================================================= */
+
+/**
+ * mem_encrypt_decrypt_xor — Encripta o desencripta in-place usando XOR.
+ * Es una operación simétrica: f(f(x)) = x.
+ */
+static void mem_encrypt_decrypt_xor(uint8_t *data, size_t size) {
+    const uint8_t key = 0x5A; /* Clave secreta estática (90 en decimal) */
+    for (size_t i = 0; i < size; i++) {
+        data[i] ^= key;
+    }
+}
+
+/* =========================================================================
  * FUNCIÓN AUXILIAR: print_stats
  * ========================================================================= */
 
@@ -327,6 +342,10 @@ int sys_smart_copy(const char *src, const char *dest,
             if (bytes_read != comp_size) { ret = SC_ERR_READ; break; }
             current_offset += bytes_read;
             
+            if (flags & SCOPY_ENCRYPT) {
+                mem_encrypt_decrypt_xor((uint8_t *)comp_buffer, comp_size);
+            }
+
             size_t decomp_size = 0;
             if (algo == ALG_RLE) {
                 decomp_size = decompress_rle_buffer(comp_buffer, comp_size, buffer);
@@ -368,8 +387,14 @@ int sys_smart_copy(const char *src, const char *dest,
                 header[3] = (uint8_t)((comp_size >> 8) & 0xFF);
                 write(fd_dest, header, 4);
                 
+                if (flags & SCOPY_ENCRYPT) {
+                    mem_encrypt_decrypt_xor((uint8_t *)comp_buffer, comp_size);
+                }
                 bytes_written = write(fd_dest, comp_buffer, comp_size);
             } else {
+                if (flags & SCOPY_ENCRYPT) {
+                    mem_encrypt_decrypt_xor((uint8_t *)buffer, (size_t)bytes_read);
+                }
                 bytes_written = write(fd_dest, buffer, (size_t)bytes_read);
             }
             

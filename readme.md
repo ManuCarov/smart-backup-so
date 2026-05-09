@@ -54,6 +54,9 @@ La herramienta se ejecuta desde la interfaz de línea de comandos (Terminal). Su
 | `-r`, `--restore` | Restaura/descomprime un respaldo (requiere `-b`). |
 | `-a`, `--algo` | Algoritmo de compresión a utilizar (1: TurboQuant+LZ77, 2: LZ77, 3: RLE). Por defecto: 1. |
 | `-p`, `--perf` | Ejecuta el Benchmark de rendimiento de Entrada/Salida. |
+| `-g`, `--generate` | Genera un archivo dummy del tamaño indicado en MB (ej. `-g 10`). |
+| `-t`, `--type` | Patrón para el archivo dummy (0: Constante, 1: Repetitivo, 2: Incremental, 3: Aleatorio). |
+| `-C`, `--cc` | Compara el tamaño original vs final al terminar el proceso. |
 
 ### Ejemplos de Uso Práctico:
 
