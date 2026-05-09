@@ -1,6 +1,8 @@
 # ==========================================
 # Archivos ignorados para smart-backup-so
 # ==========================================
+Resultados/
+Origenes/
 
 # Binarios y archivos objeto compilados
 *.o
@@ -31,3 +33,9 @@ apoyoTematico/output_syscall.txt
 .idea/
 *.swp
 .DS_Store
+
+# Claude Code (herramienta de desarrollo local)
+.claude/
+
+# Archivos comprimidos generados
+*.zip

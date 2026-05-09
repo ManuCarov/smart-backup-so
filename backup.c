@@ -12,6 +12,7 @@
 #include <getopt.h>
 
 #include "smart_copy.h"
+#include "editor.h"
 
 /* =========================================================================
  * SECCIÓN DE BENCHMARK (Comparativa de Rendimiento)
@@ -92,58 +93,67 @@ void create_dummy_file(const char* filename, size_t size, int pattern) {
 /* Ejecutar la suite de pruebas automatizada */
 void run_benchmark() {
     printf("\n==============================================================\n");
-    printf("       BENCHMARK DE RENDIMIENTO: SysCall vs Librería C        \n");
+    printf("  BENCHMARK: SysCall(read/write) vs mmap vs LibC (stdio)\n");
     printf("==============================================================\n");
-    printf("Generando archivos de prueba (1KB, 1MB, 1GB)... \n");
-    printf("(El archivo de 1GB puede tardar unos segundos)\n\n");
+    printf("Generando archivos de prueba (1KB, 1MB, 50MB)...\n");
+    printf("Midiendo context switches y wall-clock time.\n\n");
 
-    size_t size_1KB = 1024;
-    size_t size_1MB = 1024 * 1024;
-    size_t size_1GB = 1024 * 1024 * 1024;
+    size_t size_1KB  = 1024;
+    size_t size_1MB  = 1024 * 1024;
+    size_t size_50MB = 50UL * 1024 * 1024;
 
-    create_dummy_file("Archivos/bench_1KB.bin", size_1KB, -1);
-    create_dummy_file("Archivos/bench_1MB.bin", size_1MB, -1);
-    create_dummy_file("Archivos/bench_1GB.bin", size_1GB, -1);
+    mkdir("Archivos", 0777);
+    create_dummy_file("Archivos/bench_1KB.bin",  size_1KB,  -1);
+    create_dummy_file("Archivos/bench_1MB.bin",  size_1MB,  -1);
+    create_dummy_file("Archivos/bench_50MB.bin", size_50MB, -1);
 
-    struct {
-        const char* name;
-        const char* filename;
-    } tests[] = {
-        {"1 KB", "Archivos/bench_1KB.bin"},
-        {"1 MB", "Archivos/bench_1MB.bin"},
-        {"1 GB", "Archivos/bench_1GB.bin"}
+    struct { const char *name; const char *filename; } tests[] = {
+        {"1 KB",  "Archivos/bench_1KB.bin"},
+        {"1 MB",  "Archivos/bench_1MB.bin"},
+        {"50 MB", "Archivos/bench_50MB.bin"},
     };
 
-    printf("%-10s | %-20s | %-20s\n", "Tamaño", "sys_smart_copy (s)", "stdio (fread/write)");
-    printf("--------------------------------------------------------------\n");
+    printf("%-8s | %-22s | %-22s | %-22s\n",
+           "Tamano", "sys_smart_copy (s)", "sys_mmap_copy (s)", "stdio fread/fwrite (s)");
+    printf("------------------------------------------------------------------------------\n");
 
     for (int i = 0; i < 3; i++) {
-        double start, end, time_syscall, time_stdio;
-        
-        /* 1. Test Syscall (Nuestro motor crudo) */
+        double start, end, time_syscall, time_mmap, time_stdio;
+
         start = get_current_time();
         sys_smart_copy(tests[i].filename, "Archivos/bench_out_sys.bin", SCOPY_OVERWRITE, 0, NULL);
         end = get_current_time();
         time_syscall = end - start;
 
-        /* 2. Test Stdio (Librería estándar C) */
+        start = get_current_time();
+        sys_mmap_copy(tests[i].filename, "Archivos/bench_out_mmap.bin", NULL);
+        end = get_current_time();
+        time_mmap = end - start;
+
         start = get_current_time();
         std_copy(tests[i].filename, "Archivos/bench_out_std.bin");
         end = get_current_time();
         time_stdio = end - start;
 
-        printf("%-10s | %-20.6f | %-20.6f\n", tests[i].name, time_syscall, time_stdio);
+        printf("%-8s | %-22.6f | %-22.6f | %-22.6f\n",
+               tests[i].name, time_syscall, time_mmap, time_stdio);
     }
 
     printf("==============================================================\n");
+    printf("INTERPRETACION:\n");
+    printf("  sys_smart_copy: buffer 4KB, ~N/4096 pares read/write (context switches)\n");
+    printf("  sys_mmap_copy:  page faults, pocos syscalls explicitas\n");
+    printf("  Ejecuta: strace -c ./backup_EAFITos --perf  para validar\n\n");
+
     printf("Limpiando disco...\n");
-    
     remove("Archivos/bench_1KB.bin");
     remove("Archivos/bench_1MB.bin");
-    remove("Archivos/bench_1GB.bin");
+    remove("Archivos/bench_50MB.bin");
     remove("Archivos/bench_out_sys.bin");
+    remove("Archivos/bench_out_mmap.bin");
     remove("Archivos/bench_out_std.bin");
     printf("Benchmark finalizado.\n\n");
+
 }
 
 void print_help(const char *prog_name) {
@@ -159,7 +169,9 @@ void print_help(const char *prog_name) {
     printf("  -c, --comp    Comprime el respaldo (requiere -b).\n");
     printf("  -r, --restore Restaura/descomprime un respaldo (requiere -b).\n");
     printf("  -a, --algo    Algoritmo de compresión (1: TQLZ, 2: LZ77, 3: RLE) [Default: 1]\n");
-    printf("  -p, --perf    Ejecutar benchmark de rendimiento (1KB, 1MB, 1GB).\n");
+    printf("  -e, --edit    Abrir un archivo en el editor de texto interactivo (Gap Buffer).\n");
+    printf("  -E, --encrypt Encripta (o desencripta) el respaldo usando XOR.\n");
+    printf("  -p, --perf    Ejecutar benchmark de rendimiento (1KB, 1MB, 50MB, read/write vs mmap).\n");
     printf("  -g, --generate [MB] Genera un archivo dummy del tamaño indicado en MB.\n");
     printf("  -t, --type    Patrón para -g (0: Constante, 1: Repetitivo, 2: Incremental, 3: Aleatorio) [Default: 0]\n");
     printf("  -C, --cc      Compara el tamaño original vs final al terminar.\n");
@@ -177,6 +189,7 @@ int main(int argc, char *argv[]) {
     int opt_perf = 0;
     int opt_compress = 0;
     int opt_restore = 0;
+    int opt_encrypt = 0;
     int opt_generate = 0;
     size_t gen_size = 0;
     int opt_pattern = 0;
@@ -189,25 +202,30 @@ int main(int argc, char *argv[]) {
         {"perf",   no_argument,       0,  'p' },
         {"comp",   no_argument,       0,  'c' },
         {"restore",no_argument,       0,  'r' },
+        {"encrypt",no_argument,       0,  'E' },
         {"algo",   required_argument, 0,  'a' },
         {"generate",required_argument,0,  'g' },
         {"type",   required_argument, 0,  't' },
         {"cc",     no_argument,       0,  'C' },
+        {"edit",   required_argument, 0,  'e' },
         {0, 0, 0, 0}
     };
 
     int option_index = 0;
-    while ((opt = getopt_long(argc, argv, "hbpcra:g:t:C", long_options, &option_index)) != -1) {
+    char *opt_edit_file = NULL;
+    while ((opt = getopt_long(argc, argv, "hbpcra:g:t:Ce:E", long_options, &option_index)) != -1) {
         switch (opt) {
             case 'h': print_help(argv[0]); return EXIT_SUCCESS;
             case 'b': opt_backup = 1; break;
             case 'p': opt_perf = 1; break;
             case 'c': opt_compress = 1; break;
             case 'r': opt_restore = 1; break;
+            case 'E': opt_encrypt = 1; break;
             case 'a': algo = atoi(optarg); break;
             case 'g': opt_generate = 1; gen_size = (size_t)atoi(optarg) * 1024 * 1024; break;
             case 't': opt_pattern = atoi(optarg); break;
             case 'C': opt_compare = 1; break;
+            case 'e': opt_edit_file = optarg; break;
             default: print_help(argv[0]); return EXIT_FAILURE;
         }
     }
@@ -218,6 +236,45 @@ int main(int argc, char *argv[]) {
 #else
     mkdir("Archivos", 0777);
 #endif
+
+    /* =========================================================
+     * MODO EDITOR DE TEXTO (Gap Buffer + formato .ebso)
+     * ========================================================= */
+    if (opt_edit_file) {
+        GapBuffer *gb = gb_create();
+        if (!gb) {
+            fprintf(stderr, "Error: No se pudo crear el Gap Buffer.\n");
+            return EXIT_FAILURE;
+        }
+
+        struct stat st_edit;
+        int load_ret = 0;
+        if (stat(opt_edit_file, &st_edit) == 0) {
+            /* Intentar cargar como .ebso primero */
+            load_ret = gb_load(gb, opt_edit_file);
+            if (load_ret == -2) {
+                /* No es .ebso — cargar como texto plano via mmap */
+                printf("Cargando texto plano con mmap(): %s\n", opt_edit_file);
+                load_ret = gb_load_plaintext_mmap(gb, opt_edit_file);
+            } else if (load_ret == 0) {
+                printf("Archivo .ebso cargado y descomprimido: %s\n", opt_edit_file);
+            }
+        } else {
+            /* Archivo nuevo */
+            strncpy(gb->filepath, opt_edit_file, MAX_PATH_EDITOR - 1);
+            printf("Nuevo documento: %s\n", opt_edit_file);
+        }
+
+        if (load_ret < 0 && load_ret != -2) {
+            fprintf(stderr, "Error cargando el archivo.\n");
+            gb_destroy(gb);
+            return EXIT_FAILURE;
+        }
+
+        int ret = gb_interactive_edit(gb, algo);
+        gb_destroy(gb);
+        return (ret == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
 
     /* Modo Generador de Archivos Dummy */
     if (opt_generate) {
@@ -291,6 +348,10 @@ int main(int argc, char *argv[]) {
         } else if (opt_restore) {
             flags |= SCOPY_RESTORE;
             printf("--- Modo de restauración activado (Algoritmo: %d) ---\n", algo);
+        }
+        if (opt_encrypt) {
+            flags |= SCOPY_ENCRYPT;
+            printf("--- Modo de encriptación segura activado ---\n");
         }
         
         int ret = SC_OK;

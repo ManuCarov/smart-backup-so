@@ -14,6 +14,8 @@
  * ---------------------------------------------------------------------------
  */
 
+#define _GNU_SOURCE   /* Habilita madvise, ftruncate, lstat y MADV_* */
+
 #include "smart_copy.h"
 
 #include <fcntl.h>       /* open, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC */
@@ -26,6 +28,8 @@
 #include <stdio.h>       /* printf, fprintf, snprintf (solo para logs)  */
 #include <time.h>        /* time, localtime, strftime (timestamps)      */
 #include <stdint.h>      /* Tipos enteros para compresión (uint8_t)     */
+#include <sys/mman.h>    /* mmap, munmap, msync — mapeo en memoria      */
+#include <stdlib.h>      /* malloc, free — gestión dinámica de memoria  */
 
 /* =========================================================================
  * FUNCIÓN AUXILIAR: log_operation
@@ -79,7 +83,7 @@ void log_operation(const char *level, const char *message) {
  * @param out_data  Buffer donde se escribirán los datos comprimidos.
  * @return          Cantidad de bytes que resultaron de la compresión.
  */
-static size_t compress_rle_buffer(const char *in_data, size_t in_size, char *out_data) {
+size_t compress_rle_buffer(const char *in_data, size_t in_size, char *out_data) {
     size_t i = 0, out_size = 0;
     while (i < in_size) {
         unsigned char count = 1;
@@ -94,7 +98,7 @@ static size_t compress_rle_buffer(const char *in_data, size_t in_size, char *out
     return out_size;
 }
 
-static size_t decompress_rle_buffer(const char *in_data, size_t in_size, char *out_data) {
+size_t decompress_rle_buffer(const char *in_data, size_t in_size, char *out_data) {
     size_t i = 0, out_size = 0;
     while (i + 1 < in_size) {
         unsigned char count = (unsigned char)in_data[i++];
@@ -107,7 +111,7 @@ static size_t decompress_rle_buffer(const char *in_data, size_t in_size, char *o
 #define LZ77_WINDOW_SIZE 4095
 #define LZ77_LOOKAHEAD_SIZE 15
 
-static size_t compress_lz77_buffer(const char *in_data, size_t in_size, char *out_data) {
+size_t compress_lz77_buffer(const char *in_data, size_t in_size, char *out_data) {
     size_t i = 0, out_size = 0;
     const uint8_t *data = (const uint8_t *)in_data;
     uint8_t *out = (uint8_t *)out_data;
@@ -140,7 +144,7 @@ static size_t compress_lz77_buffer(const char *in_data, size_t in_size, char *ou
     return out_size;
 }
 
-static size_t decompress_lz77_buffer(const char *in_data, size_t in_size, char *out_data) {
+size_t decompress_lz77_buffer(const char *in_data, size_t in_size, char *out_data) {
     size_t i = 0, out_size = 0;
     const uint8_t *data = (const uint8_t *)in_data;
     uint8_t *out = (uint8_t *)out_data;
@@ -165,6 +169,21 @@ static size_t decompress_lz77_buffer(const char *in_data, size_t in_size, char *
         }
     }
     return out_size;
+}
+
+/* =========================================================================
+ * FUNCIONES DE ENCRIPTACIÓN / SEGURIDAD
+ * ========================================================================= */
+
+/**
+ * mem_encrypt_decrypt_xor — Encripta o desencripta in-place usando XOR.
+ * Es una operación simétrica: f(f(x)) = x.
+ */
+static void mem_encrypt_decrypt_xor(uint8_t *data, size_t size) {
+    const uint8_t key = 0x5A; /* Clave secreta estática (90 en decimal) */
+    for (size_t i = 0; i < size; i++) {
+        data[i] ^= key;
+    }
 }
 
 /* =========================================================================
@@ -280,9 +299,25 @@ int sys_smart_copy(const char *src, const char *dest,
     }
 
     /* --- 5. Bucle de copia con buffer de página (4 KB) --- */
-    char buffer[BUFFER_SIZE];
-    /* El peor caso de RLE/LZ77 duplica el tamaño si no hay repeticiones */
-    char comp_buffer[BUFFER_SIZE * 2]; 
+    /*
+     * GESTIÓN DINÁMICA DE MEMORIA:
+     * Usamos malloc() en lugar de buffers en el stack por dos razones:
+     *   1. El stack tiene tamaño limitado (~8MB típico). Para archivos grandes
+     *      o llamadas recursivas profundas, stack buffers de 8KB+ son riesgosos.
+     *   2. malloc() permite al OS asignar memoria en páginas alineadas,
+     *      optimizando el DMA y el acceso al bus I/O.
+     */
+    char *buffer     = (char *)malloc(BUFFER_SIZE);
+    char *comp_buffer = (char *)malloc(BUFFER_SIZE * 2);
+
+    if (!buffer || !comp_buffer) {
+        free(buffer);
+        free(comp_buffer);
+        close(fd_src);
+        close(fd_dest);
+        if (stats != NULL) stats->files_failed++;
+        return SC_ERR_WRITE; /* reutilizamos como error de recurso */
+    }
     
     ssize_t bytes_read;
     ssize_t bytes_written;
@@ -307,6 +342,10 @@ int sys_smart_copy(const char *src, const char *dest,
             if (bytes_read != comp_size) { ret = SC_ERR_READ; break; }
             current_offset += bytes_read;
             
+            if (flags & SCOPY_ENCRYPT) {
+                mem_encrypt_decrypt_xor((uint8_t *)comp_buffer, comp_size);
+            }
+
             size_t decomp_size = 0;
             if (algo == ALG_RLE) {
                 decomp_size = decompress_rle_buffer(comp_buffer, comp_size, buffer);
@@ -348,8 +387,14 @@ int sys_smart_copy(const char *src, const char *dest,
                 header[3] = (uint8_t)((comp_size >> 8) & 0xFF);
                 write(fd_dest, header, 4);
                 
+                if (flags & SCOPY_ENCRYPT) {
+                    mem_encrypt_decrypt_xor((uint8_t *)comp_buffer, comp_size);
+                }
                 bytes_written = write(fd_dest, comp_buffer, comp_size);
             } else {
+                if (flags & SCOPY_ENCRYPT) {
+                    mem_encrypt_decrypt_xor((uint8_t *)buffer, (size_t)bytes_read);
+                }
                 bytes_written = write(fd_dest, buffer, (size_t)bytes_read);
             }
             
@@ -393,6 +438,10 @@ int sys_smart_copy(const char *src, const char *dest,
     /* --- 6. Cerrar descriptores siempre (sin importar el resultado) --- */
     close(fd_src);
     close(fd_dest);
+
+    /* Liberar buffers dinámicos */
+    free(buffer);
+    free(comp_buffer);
 
     /* --- 7. Actualizar estadísticas y log --- */
     if (ret == SC_OK) {
@@ -580,4 +629,108 @@ int sys_smart_copy_dir(const char *src, const char *dest,
     }
 
     return ret;
+}
+
+/* =========================================================================
+ * FUNCIÓN: sys_mmap_copy
+ *
+ * Copia un archivo usando mmap() en lugar del bucle read()/write().
+ *
+ * DIFERENCIA ARQUITECTÓNICA vs sys_smart_copy:
+ *
+ *   sys_smart_copy (read/write con buffer 4KB):
+ *     - Cada read()  = 1 syscall = 1 context switch user→kernel
+ *     - Cada write() = 1 syscall = 1 context switch user→kernel
+ *     - Para un archivo de 50MB: ~12.800 pares read/write = ~25.600 c.s.
+ *
+ *   sys_mmap_copy (mapeo en memoria):
+ *     - 2 syscalls mmap() + 1 memcpy() + 1 msync()
+ *     - El kernel gestiona el I/O mediante page faults (demand paging)
+ *     - Para un archivo de 50MB: ~4 syscalls explícitas (~25.600 menos)
+ *
+ *   strace -c validará esta diferencia empíricamente.
+ * ========================================================================= */
+int sys_mmap_copy(const char *src, const char *dest, CopyStats *stats) {
+    if (!src || !dest) return SC_ERR_NULLPTR;
+
+    /* 1. Obtener tamaño del archivo origen */
+    struct stat st;
+    if (stat(src, &st) == -1) return SC_ERR_STAT;
+
+    /* Caso especial: archivo vacío */
+    if (st.st_size == 0) {
+        int fd = open(dest, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) return SC_ERR_CREATE;
+        close(fd);
+        if (stats) stats->files_copied++;
+        return SC_OK;
+    }
+
+    /* 2. Abrir origen en solo lectura */
+    int fd_src = open(src, O_RDONLY);
+    if (fd_src < 0) return SC_ERR_OPEN;
+
+    /*
+     * 3. Mapear el archivo origen en memoria virtual.
+     *    MAP_PRIVATE: cambios no se propagan (copy-on-write).
+     *    El proceso puede leer src_map[0..st.st_size) directamente.
+     *    El kernel trae las páginas del disco bajo demanda (page faults).
+     */
+    void *src_map = mmap(NULL, (size_t)st.st_size,
+                         PROT_READ, MAP_PRIVATE, fd_src, 0);
+    close(fd_src); /* fd puede cerrarse; el mapeo permanece */
+
+    if (src_map == MAP_FAILED) return SC_ERR_OPEN;
+
+    /* 4. Crear/abrir archivo destino */
+    int fd_dest = open(dest, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd_dest < 0) {
+        munmap(src_map, (size_t)st.st_size);
+        return SC_ERR_CREATE;
+    }
+
+    /* 5. Extender el archivo destino al tamaño requerido */
+    if (ftruncate(fd_dest, st.st_size) == -1) {
+        close(fd_dest);
+        munmap(src_map, (size_t)st.st_size);
+        return SC_ERR_WRITE;
+    }
+
+    /*
+     * 6. Mapear el archivo destino en memoria para escritura.
+     *    MAP_SHARED: los cambios SÍ se propagan al archivo en disco.
+     */
+    void *dest_map = mmap(NULL, (size_t)st.st_size,
+                          PROT_WRITE, MAP_SHARED, fd_dest, 0);
+    close(fd_dest);
+
+    if (dest_map == MAP_FAILED) {
+        munmap(src_map, (size_t)st.st_size);
+        return SC_ERR_CREATE;
+    }
+
+    /*
+     * 7. Transferir datos: una llamada a memcpy() en lugar de miles de
+     *    read()/write(). El kernel optimiza esto a nivel de página.
+     *    madvise() le indica al kernel que la lectura es secuencial.
+     */
+    madvise(src_map,  (size_t)st.st_size, MADV_SEQUENTIAL);
+    madvise(dest_map, (size_t)st.st_size, MADV_SEQUENTIAL);
+    memcpy(dest_map, src_map, (size_t)st.st_size);
+
+    /* 8. Forzar escritura a disco (flush de páginas sucias) */
+    msync(dest_map, (size_t)st.st_size, MS_SYNC);
+
+    /* 9. Liberar mapeos */
+    munmap(src_map,  (size_t)st.st_size);
+    munmap(dest_map, (size_t)st.st_size);
+
+    /* 10. Actualizar estadísticas */
+    if (stats) {
+        stats->files_copied++;
+        stats->bytes_copied    += st.st_size;
+        stats->original_bytes  += st.st_size;
+    }
+
+    return SC_OK;
 }

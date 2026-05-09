@@ -66,6 +66,9 @@
 /** Activar restauración/descompresión durante la copia */
 #define SCOPY_RESTORE      0x20
 
+/** Activar encriptaciÃ³n/desencriptaciÃ³n XOR simÃ©trica */
+#define SCOPY_ENCRYPT      0x40
+
 #define ALG_TURBOQUANT_LZ  1
 #define ALG_LZ77           2
 #define ALG_RLE            3
@@ -140,5 +143,44 @@ void log_operation(const char *level, const char *message);
  * @param stats  Puntero a la estructura CopyStats a mostrar.
  */
 void print_stats(const CopyStats *stats);
+
+/* =========================================================================
+ * FUNCIONES DE COMPRESIÓN EN MEMORIA (definidas en backup_engine.c)
+ *
+ * Operan enteramente sobre buffers en RAM — ningún byte plano va al disco.
+ * El llamador asigna out_data con malloc(in_size * 2) para el peor caso.
+ * ========================================================================= */
+
+/** Comprimir con RLE. Retorna bytes escritos en out_data. */
+size_t compress_rle_buffer(const char *in_data, size_t in_size, char *out_data);
+
+/** Descomprimir con RLE. Retorna bytes escritos en out_data. */
+size_t decompress_rle_buffer(const char *in_data, size_t in_size, char *out_data);
+
+/** Comprimir con LZ77. Retorna bytes escritos en out_data. */
+size_t compress_lz77_buffer(const char *in_data, size_t in_size, char *out_data);
+
+/** Descomprimir con LZ77. Retorna bytes escritos en out_data. */
+size_t decompress_lz77_buffer(const char *in_data, size_t in_size, char *out_data);
+
+/* =========================================================================
+ * COPIA CON mmap (definida en backup_engine.c)
+ *
+ * Alternativa a sys_smart_copy que usa mmap() en lugar de read()/write().
+ * Mapea origen y destino en memoria virtual; el kernel gestiona el I/O
+ * mediante page faults, reduciendo las llamadas al sistema explícitas.
+ * Útil para comparar empíricamente con strace cuántos context switches
+ * genera cada enfoque.
+ * ========================================================================= */
+
+/**
+ * sys_mmap_copy — copia un archivo usando mmap() en lugar de read()/write().
+ *
+ * @param src    Ruta del archivo origen.
+ * @param dest   Ruta del archivo destino.
+ * @param stats  Puntero a CopyStats (puede ser NULL).
+ * @return       SC_OK en éxito, SC_ERR_* en fallo.
+ */
+int sys_mmap_copy(const char *src, const char *dest, CopyStats *stats);
 
 #endif /* SMART_COPY_H */
