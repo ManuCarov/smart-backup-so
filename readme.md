@@ -115,8 +115,8 @@ smart-backup-so/
 ├── .gitignore               # Exclusión de binarios y logs del control de versiones.
 ├── editor.c                 # Lógica interactiva (Gap Buffer).
 ├── editor.h                 # Cabeceras y estructuras del Gap Buffer.
-├── Archivos/                # Carpeta central para orígenes y resultados.
-├── smart_backup.log         # (Generado) Registro de operaciones realizadas.
+├── Archivos/                # (Generado) Carpeta central para orígenes y resultados.
+│   └── smart_backup.log     # Registro de operaciones realizadas.
 └── apoyoTematico/           # Pruebas aisladas demostrando SysCalls vs LibC.
 ```
 
