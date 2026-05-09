@@ -25,6 +25,7 @@
 #include <string.h>      /* strerror, strcmp, snprintf                  */
 #include <stdio.h>       /* printf, fprintf, snprintf (solo para logs)  */
 #include <time.h>        /* time, localtime, strftime (timestamps)      */
+#include <stdint.h>      /* uint8_t, uint16_t                           */
 
 /* =========================================================================
  * FUNCIÓN AUXILIAR: log_operation
@@ -85,6 +86,88 @@ void print_stats(const CopyStats *stats) {
 }
 
 /* =========================================================================
+ * FUNCIONES DE COMPRESIÓN EN MEMORIA (CHUNKS)
+ * ========================================================================= */
+
+#define WINDOW_SIZE 4095
+#define LOOKAHEAD_SIZE 15
+
+static size_t mem_compress_rle(const uint8_t *data, size_t size, uint8_t *out) {
+    size_t i = 0, out_size = 0;
+    while (i < size) {
+        uint8_t count = 1;
+        while (i + count < size && data[i] == data[i + count] && count < 255) count++;
+        if (out) {
+            out[out_size] = count;
+            out[out_size + 1] = data[i];
+        }
+        out_size += 2;
+        i += count;
+    }
+    return out_size;
+}
+
+static size_t mem_compress_lz77(const uint8_t *data, size_t size, uint8_t *out) {
+    size_t i = 0, out_size = 0;
+    while (i < size) {
+        int match_length = 0, match_offset = 0;
+        int window_start = (i > WINDOW_SIZE) ? (int)(i - WINDOW_SIZE) : 0;
+        for (size_t j = window_start; j < i; j++) {
+            int len = 0;
+            while (len < LOOKAHEAD_SIZE && i + len < size && data[j + len] == data[i + len]) len++;
+            if (len > match_length) {
+                match_length = len;
+                match_offset = (int)(i - j);
+            }
+        }
+        if (match_length >= 3) {
+            uint8_t flag = 1;
+            uint16_t token = (match_offset << 4) | (match_length & 0x0F);
+            if (out) {
+                out[out_size] = flag;
+                out[out_size + 1] = token & 0xFF;
+                out[out_size + 2] = (token >> 8) & 0xFF;
+            }
+            out_size += 3;
+            i += match_length;
+        } else {
+            uint8_t flag = 0;
+            if (out) {
+                out[out_size] = flag;
+                out[out_size + 1] = data[i];
+            }
+            out_size += 2;
+            i++;
+        }
+    }
+    return out_size;
+}
+
+static void apply_turboquant_mock_mem(const float *matrix, uint8_t *quantized, size_t elements) {
+    if (elements == 0) return;
+    float min_v = matrix[0], max_v = matrix[0];
+    for (size_t i = 1; i < elements; i++) {
+        if (matrix[i] < min_v) min_v = matrix[i];
+        if (matrix[i] > max_v) max_v = matrix[i];
+    }
+    float range = (max_v - min_v == 0) ? 1.0f : (max_v - min_v);
+    for (size_t i = 0; i < elements; i++) {
+        quantized[i] = (uint8_t)(((matrix[i] - min_v) / range) * 255.0f);
+    }
+}
+
+/* =========================================================================
+ * FUNCIONES DE ENCRIPTACIÓN / SEGURIDAD
+ * ========================================================================= */
+
+static void mem_encrypt_decrypt_xor(uint8_t *data, size_t size) {
+    const uint8_t key = 0x5A; /* Clave secreta estática (90 en decimal) */
+    for (size_t i = 0; i < size; i++) {
+        data[i] ^= key; /* El operador XOR (^) invierte los bits según la clave */
+    }
+}
+
+/* =========================================================================
  * FUNCIÓN PRINCIPAL: sys_smart_copy
  * ========================================================================= */
 
@@ -103,7 +186,7 @@ void print_stats(const CopyStats *stats) {
  *  7. Actualizar CopyStats si no es NULL
  */
 int sys_smart_copy(const char *src, const char *dest,
-                   int flags, CopyStats *stats) {
+                   int flags, int algo, CopyStats *stats) {
 
     /* --- 1. Validar que los punteros no sean NULL --- */
     if (src == NULL || dest == NULL) {
@@ -178,15 +261,45 @@ int sys_smart_copy(const char *src, const char *dest,
 
     /* --- 5. Bucle de copia con buffer de página (4 KB) --- */
     char buffer[BUFFER_SIZE];
+    char comp_buffer[BUFFER_SIZE * 2]; /* Doble tamaño para prevenir desbordes si el archivo se expande al intentar comprimirlo */
     ssize_t bytes_read;
     ssize_t bytes_written;
     off_t   total_bytes = 0;
+    off_t   total_original_bytes = 0;
     int     ret = SC_OK;
 
     while ((bytes_read = read(fd_src, buffer, BUFFER_SIZE)) > 0) {
 
-        /* Escribir exactamente los bytes leídos */
-        bytes_written = write(fd_dest, buffer, (size_t)bytes_read);
+        total_original_bytes += bytes_read;
+        char *write_buf = buffer;
+        size_t write_size = (size_t)bytes_read;
+
+        /* Compresión al vuelo bloque a bloque (Framing de Memoria) */
+        if (flags & SCOPY_COMPRESS) {
+            if (algo == ALG_RLE) {
+                write_size = mem_compress_rle((const uint8_t *)buffer, write_size, (uint8_t *)comp_buffer);
+                write_buf = comp_buffer;
+            } else if (algo == ALG_LZ77) {
+                write_size = mem_compress_lz77((const uint8_t *)buffer, write_size, (uint8_t *)comp_buffer);
+                write_buf = comp_buffer;
+            } else if (algo == ALG_TURBOQUANT_LZ) {
+                size_t elements = write_size / sizeof(float);
+                if (elements > 0) {
+                    uint8_t tq_buffer[BUFFER_SIZE];
+                    apply_turboquant_mock_mem((const float *)buffer, tq_buffer, elements);
+                    write_size = mem_compress_lz77(tq_buffer, elements, (uint8_t *)comp_buffer);
+                    write_buf = comp_buffer;
+                }
+            }
+        }
+
+        /* Encriptación al vuelo (In-place) - Ocurre DESPUÉS de comprimir */
+        if (flags & SCOPY_ENCRYPT) {
+            mem_encrypt_decrypt_xor((uint8_t *)write_buf, write_size);
+        }
+
+        /* Escribir exactamente los bytes procesados/leídos */
+        bytes_written = write(fd_dest, write_buf, write_size);
 
         if (bytes_written < 0) {
             /* Detectar disco lleno específicamente */
@@ -200,7 +313,7 @@ int sys_smart_copy(const char *src, const char *dest,
             ret = SC_ERR_WRITE;
             break;
 
-        } else if (bytes_written != bytes_read) {
+        } else if (bytes_written != (ssize_t)write_size) {
             /* Escritura parcial — situación anómala */
             log_operation("WARN", "Escritura parcial detectada");
             ret = SC_ERR_WRITE;
@@ -227,6 +340,7 @@ int sys_smart_copy(const char *src, const char *dest,
         if (stats != NULL) {
             stats->files_copied++;
             stats->bytes_copied += total_bytes;
+            stats->original_bytes += total_original_bytes;
         }
         if (flags & SCOPY_VERBOSE) {
             printf("[OK]  %s  →  %s  (%lld bytes)\n",
@@ -266,7 +380,7 @@ int sys_smart_copy(const char *src, const char *dest,
  *  6. closedir()
  */
 int sys_smart_copy_dir(const char *src, const char *dest,
-                       int flags, CopyStats *stats) {
+                       int flags, int algo, CopyStats *stats) {
 
     /* --- 1. Validar punteros --- */
     if (src == NULL || dest == NULL) {
@@ -379,12 +493,12 @@ int sys_smart_copy_dir(const char *src, const char *dest,
 
         if (S_ISDIR(st_entry.st_mode)) {
             /* Subdirectorio → recursión */
-            int sub_ret = sys_smart_copy_dir(path_src, path_dest, flags, stats);
+            int sub_ret = sys_smart_copy_dir(path_src, path_dest, flags, algo, stats);
             if (sub_ret != SC_OK) ret = sub_ret;
 
         } else if (S_ISREG(st_entry.st_mode)) {
             /* Archivo regular → copiar */
-            int file_ret = sys_smart_copy(path_src, path_dest, flags, stats);
+            int file_ret = sys_smart_copy(path_src, path_dest, flags, algo, stats);
             if (file_ret != SC_OK) ret = file_ret;
 
         } else {

@@ -21,7 +21,7 @@
 #define BUFFER_SIZE       4096
 
 /** Ruta del archivo de log del sistema (simula registro de kernel) */
-#define LOG_FILE          "smart_backup.log"
+#define LOG_FILE          "Resultados/smart_backup.log"
 
 /** Longitud máxima de una ruta de archivo */
 #define MAX_PATH_LEN      1024
@@ -60,6 +60,19 @@
 /** Registrar operaciones en el archivo de log (LOG_FILE) */
 #define SCOPY_LOG          0x08
 
+/** Activar compresión durante la copia */
+#define SCOPY_COMPRESS     0x10
+
+/** Activar restauración/descompresión durante la copia */
+#define SCOPY_RESTORE      0x20
+
+/** Activar encriptación/desencriptación XOR simétrica */
+#define SCOPY_ENCRYPT      0x40
+
+#define ALG_TURBOQUANT_LZ  1
+#define ALG_LZ77           2
+#define ALG_RLE            3
+
 /* =========================================================================
  * ESTRUCTURA DE ESTADÍSTICAS DE COPIA
  * ========================================================================= */
@@ -73,6 +86,7 @@ typedef struct {
     long   files_failed;    /**< Número de archivos que fallaron           */
     long   dirs_created;    /**< Número de directorios creados             */
     off_t  bytes_copied;    /**< Total de bytes copiados                   */
+    off_t  original_bytes;  /**< Total de bytes leídos (originales)        */
 } CopyStats;
 
 /* =========================================================================
@@ -89,11 +103,12 @@ typedef struct {
  * @param src    Ruta del archivo origen (no puede ser NULL).
  * @param dest   Ruta del archivo destino (no puede ser NULL).
  * @param flags  Combinación de flags SCOPY_*.
+ * @param algo   Algoritmo de compresión a usar (ALG_*).
  * @param stats  Puntero a CopyStats donde se acumulan métricas (puede ser NULL).
  * @return       SC_OK en éxito, o un código SC_ERR_* en fallo.
  */
 int sys_smart_copy(const char *src, const char *dest,
-                   int flags, CopyStats *stats);
+                   int flags, int algo, CopyStats *stats);
 
 /**
  * sys_smart_copy_dir — copia recursivamente un directorio completo.
@@ -104,11 +119,12 @@ int sys_smart_copy(const char *src, const char *dest,
  * @param src    Ruta del directorio origen.
  * @param dest   Ruta del directorio destino.
  * @param flags  Combinación de flags SCOPY_*.
+ * @param algo   Algoritmo de compresión a usar (ALG_*).
  * @param stats  Puntero a CopyStats (puede ser NULL).
  * @return       SC_OK si todos los archivos se copiaron, SC_ERR_* en fallo.
  */
 int sys_smart_copy_dir(const char *src, const char *dest,
-                       int flags, CopyStats *stats);
+                       int flags, int algo, CopyStats *stats);
 
 /**
  * log_operation — registra un mensaje en LOG_FILE con timestamp.
