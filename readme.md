@@ -13,8 +13,10 @@ Una utilidad de copias de seguridad de alto rendimiento desarrollada en **C**. A
 3. **Preservación de Metadatos:** Copia exacta de los permisos (Modo POSIX) de los archivos y directorios originales.
 4. **Tolerancia a Fallos:** Manejo robusto de escrituras parciales, detección de disco lleno (`ENOSPC`) y validación de rutas largas.
 5. **Sistema de Log:** Registro de operaciones con marcas de tiempo en `smart_backup.log`, simulando el comportamiento `dmesg` del kernel.
-6. **Benchmark Integrado:** Suite de pruebas para comparar el rendimiento real frente a las funciones convencionales de la librería C.
-7. **Compresión al Vuelo:** Integración de algoritmos de entropía (RLE, LZ77) adaptados para operar sobre memoria RAM (Framing) sin usar `stdio.h`.
+6. **Benchmark Integrado:** Suite de pruebas para comparar el rendimiento real (`read/write` vs `mmap` vs `stdio`).
+7. **Compresión al Vuelo:** Integración de algoritmos (RLE, LZ77) que operan sobre bloques de memoria RAM (Framing).
+8. **Encriptación Segura:** Algoritmo XOR simétrico en memoria (In-place) para proteger los backups.
+9. **Editor Interactivo:** Editor de texto integrado en la terminal usando una estructura *Gap Buffer* con su propio formato propietario (`.ebso`).
 
 > 💡 **Nota:** Para conocer la arquitectura profunda, el manejo de memoria (SysCalls) y los códigos de error del motor, consulta el archivo [DETALLES_TECNICOS.md](DETALLES_TECNICOS.md).
 
@@ -52,9 +54,11 @@ La herramienta se ejecuta desde la interfaz de línea de comandos (Terminal). Su
 | `-b`, `--backup` | Realiza el respaldo de un archivo o directorio. |
 | `-c`, `--comp` | Comprime el respaldo al vuelo (requiere `-b`). |
 | `-r`, `--restore` | Restaura/descomprime un respaldo (requiere `-b`). |
+| `-E`, `--encrypt` | Encripta (o desencripta) el respaldo en tiempo real usando XOR. |
+| `-e`, `--edit` | Abre un archivo en el editor de texto interactivo (*Gap Buffer*). |
 | `-a`, `--algo` | Algoritmo de compresión a utilizar (1: TurboQuant+LZ77, 2: LZ77, 3: RLE). Por defecto: 1. |
-| `-p`, `--perf` | Ejecuta el Benchmark de rendimiento de Entrada/Salida. |
-| `-g`, `--generate` | Genera un archivo dummy del tamaño indicado en MB (ej. `-g 10`). |
+| `-p`, `--perf` | Ejecuta el Benchmark de rendimiento de Entrada/Salida (1KB, 1MB, 50MB). |
+| `-g`, `--generate` | Genera un archivo dummy del tamaño indicado en MB. Se guarda en `Archivos/`. |
 | `-t`, `--type` | Patrón para el archivo dummy (0: Constante, 1: Repetitivo, 2: Incremental, 3: Aleatorio). |
 | `-C`, `--cc` | Compara el tamaño original vs final al terminar el proceso. |
 
@@ -71,11 +75,16 @@ La herramienta se ejecuta desde la interfaz de línea de comandos (Terminal). Su
 ```
 *Al finalizar, se imprimirá un resumen en consola detallando la cantidad de bytes transferidos, archivos procesados y posibles fallos.*
 
-**3. Correr el Benchmark Interno:**
+**3. Encriptar y comprimir un respaldo simultáneamente:**
+```bash
+./backup_EAFITos -b -c -E Archivos/secreto.txt Archivos/secreto_seguro.bin
+```
+
+**4. Correr el Benchmark Interno:**
 ```bash
 ./backup_EAFITos --perf
 ```
-*Este comando creará archivos "dummy" de 1KB, 1MB y 1GB, los copiará usando tanto llamadas puras del sistema (`read/write`) como la librería estándar de C (`fread/fwrite`), y arrojará una tabla comparativa del tiempo de reloj (Wall-clock time) que tomó cada método. Al finalizar, limpiará el disco automáticamente.*
+*Este comando creará archivos "dummy" de 1KB, 1MB y 50MB, los copiará usando llamadas puras del sistema (`read/write`), `mmap` y la librería estándar de C (`fread/fwrite`), arrojando una tabla comparativa.*
 
 ---
 
@@ -104,6 +113,9 @@ smart-backup-so/
 ├── smart_copy.h             # Cabecera central (Constantes, Flags y Firmas).
 ├── Makefile                 # Reglas de compilación y tests automatizados.
 ├── .gitignore               # Exclusión de binarios y logs del control de versiones.
+├── editor.c                 # Lógica interactiva (Gap Buffer).
+├── editor.h                 # Cabeceras y estructuras del Gap Buffer.
+├── Archivos/                # Carpeta central para orígenes y resultados.
 ├── smart_backup.log         # (Generado) Registro de operaciones realizadas.
 └── apoyoTematico/           # Pruebas aisladas demostrando SysCalls vs LibC.
 ```
