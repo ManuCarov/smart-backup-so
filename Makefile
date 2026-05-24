@@ -14,6 +14,7 @@ $(TARGET): $(SRC)
 clean:
 	rm -f $(TARGET)
 	rm -rf src_test dest_test test_file.txt test_file_backup.txt
+	rm -rf Origenes Resultados
 
 # Regla para ejecutar pruebas automáticas
 test: $(TARGET)
@@ -34,4 +35,13 @@ test: $(TARGET)
 	@echo "\n--- [4] REVISANDO EL DIRECTORIO DE BACKUP ---"
 	ls -R dest_test
 
-.PHONY: all clean test
+# Regla para ejecutar todos los benchmarks automáticamente
+bench: $(TARGET)
+	@echo "\n--- [1] EJECUTANDO BENCHMARK I/O (Syscalls vs Stdio) ---"
+	./$(TARGET) --perf
+	@echo "\n--- [2] EJECUTANDO BENCHMARK DE ENCRIPTACIÓN ---"
+	./$(TARGET) --perf-enc
+	@echo "\n--- [3] EJECUTANDO BENCHMARK DE COMPRESIÓN ---"
+	./$(TARGET) --perf-comp
+
+.PHONY: all clean test bench

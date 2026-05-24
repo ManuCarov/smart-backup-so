@@ -21,7 +21,7 @@
 #define BUFFER_SIZE       4096
 
 /** Ruta del archivo de log del sistema (simula registro de kernel) */
-#define LOG_FILE          "Archivos/smart_backup.log"
+#define LOG_FILE          "Resultados/smart_backup.log"
 
 /** Longitud máxima de una ruta de archivo */
 #define MAX_PATH_LEN      1024
@@ -66,12 +66,16 @@
 /** Activar restauración/descompresión durante la copia */
 #define SCOPY_RESTORE      0x20
 
-/** Activar encriptaciÃ³n/desencriptaciÃ³n XOR simÃ©trica */
+/** Activar encriptación/desencriptación XOR simétrica */
 #define SCOPY_ENCRYPT      0x40
 
 #define ALG_TURBOQUANT_LZ  1
 #define ALG_LZ77           2
 #define ALG_RLE            3
+
+#define ENC_XOR            1
+#define ENC_RC4            2
+#define ENC_AES_MOCK       3
 
 /* =========================================================================
  * ESTRUCTURA DE ESTADÍSTICAS DE COPIA
@@ -104,11 +108,13 @@ typedef struct {
  * @param dest   Ruta del archivo destino (no puede ser NULL).
  * @param flags  Combinación de flags SCOPY_*.
  * @param algo   Algoritmo de compresión a usar (ALG_*).
+ * @param enc_algo Algoritmo de encriptación (ENC_*).
+ * @param enc_key Contraseña para el proceso de cifrado.
  * @param stats  Puntero a CopyStats donde se acumulan métricas (puede ser NULL).
  * @return       SC_OK en éxito, o un código SC_ERR_* en fallo.
  */
 int sys_smart_copy(const char *src, const char *dest,
-                   int flags, int algo, CopyStats *stats);
+                   int flags, int algo, int enc_algo, const char *enc_key, CopyStats *stats);
 
 /**
  * sys_smart_copy_dir — copia recursivamente un directorio completo.
@@ -120,11 +126,13 @@ int sys_smart_copy(const char *src, const char *dest,
  * @param dest   Ruta del directorio destino.
  * @param flags  Combinación de flags SCOPY_*.
  * @param algo   Algoritmo de compresión a usar (ALG_*).
+ * @param enc_algo Algoritmo de encriptación (ENC_*).
+ * @param enc_key Contraseña para el proceso de cifrado.
  * @param stats  Puntero a CopyStats (puede ser NULL).
  * @return       SC_OK si todos los archivos se copiaron, SC_ERR_* en fallo.
  */
 int sys_smart_copy_dir(const char *src, const char *dest,
-                       int flags, int algo, CopyStats *stats);
+                       int flags, int algo, int enc_algo, const char *enc_key, CopyStats *stats);
 
 /**
  * log_operation — registra un mensaje en LOG_FILE con timestamp.
@@ -143,44 +151,5 @@ void log_operation(const char *level, const char *message);
  * @param stats  Puntero a la estructura CopyStats a mostrar.
  */
 void print_stats(const CopyStats *stats);
-
-/* =========================================================================
- * FUNCIONES DE COMPRESIÓN EN MEMORIA (definidas en backup_engine.c)
- *
- * Operan enteramente sobre buffers en RAM — ningún byte plano va al disco.
- * El llamador asigna out_data con malloc(in_size * 2) para el peor caso.
- * ========================================================================= */
-
-/** Comprimir con RLE. Retorna bytes escritos en out_data. */
-size_t compress_rle_buffer(const char *in_data, size_t in_size, char *out_data);
-
-/** Descomprimir con RLE. Retorna bytes escritos en out_data. */
-size_t decompress_rle_buffer(const char *in_data, size_t in_size, char *out_data);
-
-/** Comprimir con LZ77. Retorna bytes escritos en out_data. */
-size_t compress_lz77_buffer(const char *in_data, size_t in_size, char *out_data);
-
-/** Descomprimir con LZ77. Retorna bytes escritos en out_data. */
-size_t decompress_lz77_buffer(const char *in_data, size_t in_size, char *out_data);
-
-/* =========================================================================
- * COPIA CON mmap (definida en backup_engine.c)
- *
- * Alternativa a sys_smart_copy que usa mmap() en lugar de read()/write().
- * Mapea origen y destino en memoria virtual; el kernel gestiona el I/O
- * mediante page faults, reduciendo las llamadas al sistema explícitas.
- * Útil para comparar empíricamente con strace cuántos context switches
- * genera cada enfoque.
- * ========================================================================= */
-
-/**
- * sys_mmap_copy — copia un archivo usando mmap() en lugar de read()/write().
- *
- * @param src    Ruta del archivo origen.
- * @param dest   Ruta del archivo destino.
- * @param stats  Puntero a CopyStats (puede ser NULL).
- * @return       SC_OK en éxito, SC_ERR_* en fallo.
- */
-int sys_mmap_copy(const char *src, const char *dest, CopyStats *stats);
 
 #endif /* SMART_COPY_H */
