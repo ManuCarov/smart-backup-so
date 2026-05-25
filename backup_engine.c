@@ -160,6 +160,16 @@ static void apply_turboquant_mock_mem(const float *matrix, uint8_t *quantized, s
  * FUNCIONES DE ENCRIPTACIÓN / SEGURIDAD
  * ========================================================================= */
 
+/*
+ * Destrucción segura de secretos en RAM.
+ * Se define aquí para uso interno del motor; backup.c tiene su propia copia.
+ * volatile impide que el compilador optimice el bucle y lo elimine.
+ */
+static void secure_zero(void *ptr, size_t len) {
+    volatile unsigned char *p = (volatile unsigned char *)ptr;
+    while (len--) *p++ = 0;
+}
+
 /* 1. XOR Dinámico Multibyte */
 static void mem_encrypt_xor_dynamic(uint8_t *data, size_t size, const char *key) {
     size_t key_len = strlen(key);
@@ -187,6 +197,14 @@ static void mem_encrypt_rc4(uint8_t *data, size_t size, const char *key) {
         uint8_t temp = S[i]; S[i] = S[j]; S[j] = temp;
         data[k] ^= S[(S[i] + S[j]) % 256];
     }
+    /*
+     * SEGURIDAD — Destruir el estado interno del algoritmo RC4.
+     * El array S[] contiene el estado del keystream derivado de la llave.
+     * Si no se borra, un atacante con acceso al core dump o al proceso
+     * podría reconstruir el keystream y descifrar los datos.
+     * secure_zero() usa acceso volatile para resistir optimizaciones del compilador.
+     */
+    secure_zero(S, sizeof(S));
 }
 
 /* 3. AES-Mock (Simula sobrecosto computacional y usa RC4 por debajo) */

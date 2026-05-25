@@ -10,8 +10,22 @@
 #include <time.h>
 #include <sys/time.h>
 #include <getopt.h>
+#include <sys/mman.h>   /* mlock / munlock — evitar swap de la llave al disco */
 
 #include "smart_copy.h"
+
+/* =========================================================================
+ * DESTRUCCIÓN SEGURA DE SECRETOS EN RAM
+ * =========================================================================
+ * explicit_bzero() garantiza que el compilador NO optimice el borrado.
+ * En sistemas sin explicit_bzero (macOS antiguo) usamos volatile memset.
+ * ========================================================================= */
+#ifndef __GLIBC__
+static void explicit_bzero(void *ptr, size_t len) {
+    volatile unsigned char *p = (volatile unsigned char *)ptr;
+    while (len--) *p++ = 0;
+}
+#endif
 
 /* =========================================================================
  * SECCIÓN DE BENCHMARK (Comparativa de Rendimiento)
@@ -290,7 +304,26 @@ int main(int argc, char *argv[]) {
     int opt_compare = 0;
     int algo = 1; // Por defecto
     int enc_algo = 1; // Por defecto XOR Dinámico si -e se pone sin argumentos
-    char enc_key[256] = "EAFIT2026"; // Clave por defecto si no pasa -k
+
+    /*
+     * SEGURIDAD — Gestión de la llave criptográfica:
+     *   1. El buffer se inicializa a cero (sin valor hardcoded).
+     *   2. mlock() fija la página en RAM para que el kernel NO la envíe
+     *      al área de Swap en disco (contramedida a la "trampa de memoria
+     *      virtual" del enunciado).
+     *   3. Si el usuario no pasa -k, se solicita la llave de forma
+     *      interactiva con getpass(), que desactiva el eco del terminal.
+     *   4. Al finalizar, explicit_bzero() destruye la llave en RAM antes
+     *      de que el stack se libere.
+     */
+    char enc_key[256];
+    memset(enc_key, 0, sizeof(enc_key));
+    /* Fijar la página en RAM para evitar swap al disco */
+    if (mlock(enc_key, sizeof(enc_key)) != 0) {
+        fprintf(stderr, "[WARN] mlock() falló (%s). La llave podría ir al Swap.\n",
+                strerror(errno));
+    }
+    int key_provided_by_user = 0; /* flag: el usuario pasó -k */
 
     static struct option long_options[] = {
         {"help",   no_argument,       0,  'h' },
@@ -320,13 +353,34 @@ int main(int argc, char *argv[]) {
             case 'c': opt_compress = 1; break;
             case 'r': opt_restore = 1; break;
             case 'e': opt_encrypt = 1; enc_algo = atoi(optarg); break;
-            case 'k': strncpy(enc_key, optarg, sizeof(enc_key)-1); break;
+            case 'k': strncpy(enc_key, optarg, sizeof(enc_key)-1);
+                      enc_key[sizeof(enc_key)-1] = '\0';
+                      key_provided_by_user = 1; break;
             case 'a': algo = atoi(optarg); break;
             case 'g': opt_generate = 1; gen_size = (size_t)atoi(optarg) * 1024 * 1024; break;
             case 't': opt_pattern = atoi(optarg); break;
             case 'C': opt_compare = 1; break;
             default: print_help(argv[0]); return EXIT_FAILURE;
         }
+    }
+
+    /*
+     * SEGURIDAD — Solicitar llave interactivamente si se activó encriptación
+     * pero el usuario NO pasó -k. getpass() desactiva el eco del terminal,
+     * por lo que la contraseña no queda en el historial de la shell.
+     * Nota de SO: la llave NO se pasa por argv para evitar que aparezca
+     * en "ps aux" durante la ejecución del proceso.
+     */
+    if (opt_encrypt && !key_provided_by_user) {
+        const char *pass = getpass("🔑 Ingresa la llave de cifrado: ");
+        if (pass == NULL || pass[0] == '\0') {
+            fprintf(stderr, "[ERROR] No se proporcionó una llave de cifrado. Abortando.\n");
+            explicit_bzero(enc_key, sizeof(enc_key));
+            munlock(enc_key, sizeof(enc_key));
+            return EXIT_FAILURE;
+        }
+        strncpy(enc_key, pass, sizeof(enc_key) - 1);
+        enc_key[sizeof(enc_key) - 1] = '\0';
     }
 
     /* Asegurar que las carpetas existan para alojar logs, orígenes y benchs */
@@ -502,8 +556,21 @@ int main(int argc, char *argv[]) {
         }
     } else {
         print_help(argv[0]);
+        explicit_bzero(enc_key, sizeof(enc_key));
+        munlock(enc_key, sizeof(enc_key));
         return EXIT_FAILURE;
     }
+
+    /*
+     * DESTRUCCIÓN SEGURA DE LA LLAVE — Ingeniería de SO:
+     *   explicit_bzero() garantiza que el compilador no optimice el borrado
+     *   (a diferencia de memset, que puede ser eliminado si el compilador
+     *   detecta que el buffer no se usa después). Así no queda basura
+     *   criptográfica en el stack ni en el heap.
+     *   munlock() libera la página de RAM que habíamos fijado con mlock().
+     */
+    explicit_bzero(enc_key, sizeof(enc_key));
+    munlock(enc_key, sizeof(enc_key));
 
     return EXIT_SUCCESS;
 }
