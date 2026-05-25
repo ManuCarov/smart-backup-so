@@ -506,71 +506,16 @@ int main(int argc, char *argv[]) {
             printf("--- Iniciando respaldo del archivo '%s' en '%s' ---\n", src, dest);
             ret = sys_smart_copy(src, dest, flags, algo, enc_algo, enc_key, &stats);
             printf("--- Respaldo completado ---\n");
-        } else {
-            fprintf(stderr, "Error: El origen no es válido. Debe ser carpeta o archivo.\n");
-            return EXIT_FAILURE;
         }
 
-        /* Imprimir las métricas recolectadas por nuestro motor */
         print_stats(&stats);
 
-        /* Validar si hubo algún problema reportado por el engine */
-        if (ret != SC_OK) {
-            fprintf(stderr, "\n[ATENCIÓN] El respaldo finalizó con errores (Código: %d)\n", ret);
-            return EXIT_FAILURE;
-        }
-
-        /* Mostrar comparación de tamaños si el usuario lo solicitó */
-        if (opt_compare) {
-            printf("\n--- COMPARACIÓN DE TAMAÑOS ---\n");
-            printf("Tamaño Original : %lld bytes\n", (long long)stats.original_bytes);
-            printf("Tamaño Final    : %lld bytes\n", (long long)stats.bytes_copied);
-            if (stats.original_bytes > 0) {
-                double ratio = (1.0 - ((double)stats.bytes_copied / (double)stats.original_bytes)) * 100.0;
-                if (ratio > 0) {
-                    printf("Ahorro de espacio: %.2f%%\n", ratio);
-                } else {
-                    printf("Aumento de tamaño: %.2f%%\n", -ratio);
-                }
-            }
-            printf("------------------------------\n");
-        }
-
-        /* Mostrar análisis si usó encriptación y pidió comparar métricas */
-        if (opt_compare && opt_encrypt) {
-            printf("\n--- ANÁLISIS DE ENCRIPTACIÓN ---\n");
-            printf("Algoritmo usado : ");
-            if (enc_algo == 1) {
-                printf("XOR Dinámico Multibyte\n");
-                printf("Seguridad       : BAJA (Vulnerable a análisis de frecuencia)\n");
-                printf("Impacto en peso : Nulo (0 bytes adicionales)\n");
-            } else if (enc_algo == 2) {
-                printf("RC4 Stream Cipher\n");
-                printf("Seguridad       : MEDIA (Pseudoaleatorio robusto)\n");
-                printf("Impacto en peso : +16 bytes (Vector de Inicialización artificial)\n");
-            } else if (enc_algo == 3) {
-                printf("AES-256 (Híbrido Simulado)\n");
-                printf("Seguridad       : ALTA (Cifrado de grado militar simulado)\n");
-                printf("Impacto en peso : +16 bytes (IV) + Alta Sobrecarga CPU\n");
-            }
-        }
-    } else {
-        print_help(argv[0]);
+        /* Limpieza segura */
         explicit_bzero(enc_key, sizeof(enc_key));
         munlock(enc_key, sizeof(enc_key));
-        return EXIT_FAILURE;
-    }
 
-    /*
-     * DESTRUCCIÓN SEGURA DE LA LLAVE — Ingeniería de SO:
-     *   explicit_bzero() garantiza que el compilador no optimice el borrado
-     *   (a diferencia de memset, que puede ser eliminado si el compilador
-     *   detecta que el buffer no se usa después). Así no queda basura
-     *   criptográfica en el stack ni en el heap.
-     *   munlock() libera la página de RAM que habíamos fijado con mlock().
-     */
-    explicit_bzero(enc_key, sizeof(enc_key));
-    munlock(enc_key, sizeof(enc_key));
+        return (ret == SC_OK) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
 
     return EXIT_SUCCESS;
 }

@@ -159,12 +159,35 @@ int gb_insert_char(GapBuffer *gb, char c) {
 
 /**
  * gb_insert_string — Inserta `len` bytes de `str` en el cursor.
+ * Optimizada para inserciones masivas (Bulk Insert) sin cuellos de botella O(N^2).
  */
 int gb_insert_string(GapBuffer *gb, const char *str, size_t len) {
     if (!gb || !str) return -1;
-    for (size_t i = 0; i < len; i++) {
-        if (gb_insert_char(gb, str[i]) != 0) return -1;
+    if (len == 0) return 0;
+
+    /* Verificar si hay suficiente espacio en el gap actual */
+    size_t current_gap = gb->gap_end - gb->gap_start;
+    if (current_gap < len) {
+        size_t needed = len - current_gap;
+        size_t expand_by = ((needed / GAP_GROW_SIZE) + 1) * GAP_GROW_SIZE;
+        size_t new_size = gb->buf_size + expand_by;
+        size_t post_len = gb->buf_size - gb->gap_end;
+
+        char *new_buf = (char *)realloc(gb->buf, new_size);
+        if (!new_buf) return -1;
+
+        gb->buf = new_buf;
+        if (post_len > 0) {
+            memmove(gb->buf + new_size - post_len, gb->buf + gb->gap_end, post_len);
+        }
+        gb->gap_end = new_size - post_len;
+        gb->buf_size = new_size;
     }
+
+    /* Copia masiva de todo el bloque directamente en la memoria */
+    memcpy(gb->buf + gb->gap_start, str, len);
+    gb->gap_start += len;
+    gb->modified = 1;
     return 0;
 }
 

@@ -1,0 +1,4 @@
+Este es un archivo de prueba secreto.
+Contiene informacion que debe ser protegida.
+1234567890
+FIN DE MENSAJE.

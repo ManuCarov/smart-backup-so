@@ -160,60 +160,63 @@ static void apply_turboquant_mock_mem(const float *matrix, uint8_t *quantized, s
  * FUNCIONES DE ENCRIPTACIÓN / SEGURIDAD
  * ========================================================================= */
 
-/*
- * Destrucción segura de secretos en RAM.
- * Se define aquí para uso interno del motor; backup.c tiene su propia copia.
- * volatile impide que el compilador optimice el bucle y lo elimine.
- */
 static void secure_zero(void *ptr, size_t len) {
     volatile unsigned char *p = (volatile unsigned char *)ptr;
     while (len--) *p++ = 0;
 }
 
-/* 1. XOR Dinámico Multibyte */
-static void mem_encrypt_xor_dynamic(uint8_t *data, size_t size, const char *key) {
+/* Contexto para RC4 (Evita el Two-Time Pad al mantener el estado S) */
+typedef struct {
+    uint8_t S[256];
+    int i, j;
+} RC4_Context;
+
+/* 1. XOR Dinámico Multibyte con mantenimiento de Offset */
+static void mem_encrypt_xor_dynamic_state(uint8_t *data, size_t size, const char *key, size_t *offset) {
     size_t key_len = strlen(key);
     if (key_len == 0) return;
     for (size_t i = 0; i < size; i++) {
-        data[i] ^= key[i % key_len];
+        data[i] ^= key[(*offset + i) % key_len];
     }
+    *offset += size;
 }
 
-/* 2. RC4 (Cifrado de flujo pseudoaleatorio) */
-static void mem_encrypt_rc4(uint8_t *data, size_t size, const char *key) {
+/* 2. RC4 - Inicialización del Estado (Combina Key + IV) */
+static void rc4_init(RC4_Context *ctx, const char *key, const char *iv, size_t iv_len) {
     size_t key_len = strlen(key);
     if (key_len == 0) return;
-    uint8_t S[256];
-    for (int i = 0; i < 256; i++) S[i] = (uint8_t)i;
+    
+    /* Fusionar Llave y Vector de Inicialización si existe */
+    char combo_key[512] = {0};
+    size_t k = 0;
+    while(k < key_len && k < 255) { combo_key[k] = key[k]; k++; }
+    if (iv && iv_len > 0) {
+        for(size_t v=0; v < iv_len && k < 511; v++, k++) {
+            combo_key[k] = iv[v];
+        }
+    }
+    size_t combo_len = k;
+
+    for (int i = 0; i < 256; i++) ctx->S[i] = (uint8_t)i;
     int j = 0;
     for (int i = 0; i < 256; i++) {
-        j = (j + S[i] + key[i % key_len]) % 256;
-        uint8_t temp = S[i]; S[i] = S[j]; S[j] = temp;
+        j = (j + ctx->S[i] + combo_key[i % combo_len]) % 256;
+        uint8_t temp = ctx->S[i]; ctx->S[i] = ctx->S[j]; ctx->S[j] = temp;
     }
-    int i = 0; j = 0;
-    for (size_t k = 0; k < size; k++) {
-        i = (i + 1) % 256;
-        j = (j + S[i]) % 256;
-        uint8_t temp = S[i]; S[i] = S[j]; S[j] = temp;
-        data[k] ^= S[(S[i] + S[j]) % 256];
-    }
-    /*
-     * SEGURIDAD — Destruir el estado interno del algoritmo RC4.
-     * El array S[] contiene el estado del keystream derivado de la llave.
-     * Si no se borra, un atacante con acceso al core dump o al proceso
-     * podría reconstruir el keystream y descifrar los datos.
-     * secure_zero() usa acceso volatile para resistir optimizaciones del compilador.
-     */
-    secure_zero(S, sizeof(S));
+    ctx->i = 0; ctx->j = 0;
+    secure_zero(combo_key, sizeof(combo_key));
 }
 
-/* 3. AES-Mock (Simula sobrecosto computacional y usa RC4 por debajo) */
-static void mem_encrypt_aes_mock(uint8_t *data, size_t size, const char *key) {
-    /* Múltiples pasadas para simular el costo de CPU de un cifrado por bloques estándar */
-    for (int pass = 0; pass < 3; pass++) {
-        mem_encrypt_xor_dynamic(data, size, key);
+/* Generador de flujo de cifrado RC4 */
+static void rc4_crypt(RC4_Context *ctx, uint8_t *data, size_t size) {
+    for (size_t k = 0; k < size; k++) {
+        ctx->i = (ctx->i + 1) % 256;
+        ctx->j = (ctx->j + ctx->S[ctx->i]) % 256;
+        uint8_t temp = ctx->S[ctx->i]; 
+        ctx->S[ctx->i] = ctx->S[ctx->j]; 
+        ctx->S[ctx->j] = temp;
+        data[k] ^= ctx->S[(ctx->S[ctx->i] + ctx->S[ctx->j]) % 256];
     }
-    mem_encrypt_rc4(data, size, key);
 }
 
 /* =========================================================================
@@ -311,20 +314,32 @@ int sys_smart_copy(const char *src, const char *dest,
     /* --- 5. Bucle de copia con buffer de página (4 KB) --- */
     char buffer[BUFFER_SIZE];
     char comp_buffer[BUFFER_SIZE * 2]; /* Doble tamaño para prevenir desbordes si el archivo se expande al intentar comprimirlo */
-    ssize_t bytes_read;
+    ssize_t bytes_read = 0;
     ssize_t bytes_written;
     off_t   total_bytes = 0;
     off_t   total_original_bytes = 0;
     int     ret = SC_OK;
 
+    /* Estado Persistente de Criptografía */
+    RC4_Context rc4_ctx = {0}; /* Previene memoria basura si falla la inicialización de llave */
+    size_t xor_offset = 0;
+
     /* --- 4.5. Inyección/Extracción de Vector de Inicialización (IV) --- */
-    /* Esta técnica altera el peso final para demostrar que algoritmos robustos añaden metadatos */
     if (flags & SCOPY_ENCRYPT) {
         if (enc_algo == ENC_RC4 || enc_algo == ENC_AES_MOCK) {
             char iv_buffer[16] = {0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x1A, 0x1B, 
                                   0x2A, 0x2B, 0x3A, 0x3B, 0x4A, 0x4B, 0x5A, 0x5B};
             if (!(flags & SCOPY_RESTORE)) {
-                /* Cifrando: Añadir IV artificial al inicio (+16 bytes de peso) */
+                /* Cifrando: Generar un IV verdaderamente aleatorio (+16 bytes de peso) */
+                int urandom_fd = open("/dev/urandom", O_RDONLY);
+                if (urandom_fd >= 0) {
+                    read(urandom_fd, iv_buffer, 16);
+                    close(urandom_fd);
+                } else {
+                    /* Fallback pseudoaleatorio si /dev/urandom falla o no existe */
+                    srand((unsigned int)time(NULL));
+                    for(int i = 0; i < 16; i++) iv_buffer[i] = (char)(rand() % 256);
+                }
                 ssize_t w = write(fd_dest, iv_buffer, 16);
                 if (w == 16) total_bytes += 16;
             } else {
@@ -332,43 +347,100 @@ int sys_smart_copy(const char *src, const char *dest,
                 ssize_t r = read(fd_src, iv_buffer, 16);
                 if (r == 16) total_original_bytes += 16;
             }
+            rc4_init(&rc4_ctx, enc_key, iv_buffer, 16);
         }
     }
 
-    while ((bytes_read = read(fd_src, buffer, BUFFER_SIZE)) > 0) {
+    while (1) {
+        /* 5.1 Protocolo de Framing: Leemos el tamaño exacto si está comprimido y restaurando */
+        if ((flags & SCOPY_RESTORE) && (flags & SCOPY_COMPRESS)) {
+            uint32_t chunk_size = 0;
+            ssize_t r = read(fd_src, &chunk_size, sizeof(chunk_size));
+            if (r == 0) break; /* EOF */
+            if (r < 0) { ret = SC_ERR_READ; break; }
+            total_original_bytes += r;
+            
+            /* Prevención de desbordamiento por tamaño anómalo */
+            if (chunk_size == 0 || chunk_size > sizeof(comp_buffer)) {
+                ret = SC_ERR_READ;
+                break;
+            }
+            bytes_read = read(fd_src, buffer, chunk_size);
+        } else {
+            bytes_read = read(fd_src, buffer, BUFFER_SIZE);
+        }
+        
+        if (bytes_read <= 0) break;
 
         total_original_bytes += bytes_read;
         char *write_buf = buffer;
         size_t write_size = (size_t)bytes_read;
 
-        /* Compresión al vuelo bloque a bloque (Framing de Memoria) */
-        if (flags & SCOPY_COMPRESS) {
+        /* --- 5.1.A. RESTAURACIÓN: Desencriptar antes de descompresión --- */
+        if ((flags & SCOPY_RESTORE) && (flags & SCOPY_ENCRYPT)) {
+            if (enc_algo == ENC_XOR) {
+                mem_encrypt_xor_dynamic_state((uint8_t *)write_buf, write_size, enc_key, &xor_offset);
+            } else if (enc_algo == ENC_RC4) {
+                rc4_crypt(&rc4_ctx, (uint8_t *)write_buf, write_size);
+            } else if (enc_algo == ENC_AES_MOCK) {
+                /* Inverso de encriptación -> RC4 primero, luego XOR */
+                rc4_crypt(&rc4_ctx, (uint8_t *)write_buf, write_size);
+                size_t key_len = strlen(enc_key);
+                if (key_len > 0) {
+                    for (int pass = 0; pass < 3; pass++) {
+                        for (size_t i = 0; i < write_size; i++) {
+                            write_buf[i] ^= enc_key[(xor_offset + i) % key_len];
+                        }
+                    }
+                    xor_offset += write_size;
+                }
+            }
+        }
+
+        /* --- 5.1.B. RESPALDO: Compresión al vuelo --- */
+        if (!(flags & SCOPY_RESTORE) && (flags & SCOPY_COMPRESS)) {
             if (algo == ALG_RLE) {
-                write_size = mem_compress_rle((const uint8_t *)buffer, write_size, (uint8_t *)comp_buffer);
+                write_size = mem_compress_rle((const uint8_t *)write_buf, write_size, (uint8_t *)comp_buffer);
                 write_buf = comp_buffer;
             } else if (algo == ALG_LZ77) {
-                write_size = mem_compress_lz77((const uint8_t *)buffer, write_size, (uint8_t *)comp_buffer);
+                write_size = mem_compress_lz77((const uint8_t *)write_buf, write_size, (uint8_t *)comp_buffer);
                 write_buf = comp_buffer;
             } else if (algo == ALG_TURBOQUANT_LZ) {
                 size_t elements = write_size / sizeof(float);
                 if (elements > 0) {
                     uint8_t tq_buffer[BUFFER_SIZE];
-                    apply_turboquant_mock_mem((const float *)buffer, tq_buffer, elements);
+                    apply_turboquant_mock_mem((const float *)write_buf, tq_buffer, elements);
                     write_size = mem_compress_lz77(tq_buffer, elements, (uint8_t *)comp_buffer);
                     write_buf = comp_buffer;
                 }
             }
         }
 
-        /* Encriptación al vuelo (In-place) - Ocurre DESPUÉS de comprimir */
-        if (flags & SCOPY_ENCRYPT) {
+        /* --- 5.1.C. RESPALDO: Encriptación al vuelo (DESPUÉS de comprimir) --- */
+        if (!(flags & SCOPY_RESTORE) && (flags & SCOPY_ENCRYPT)) {
             if (enc_algo == ENC_XOR) {
-                mem_encrypt_xor_dynamic((uint8_t *)write_buf, write_size, enc_key);
+                mem_encrypt_xor_dynamic_state((uint8_t *)write_buf, write_size, enc_key, &xor_offset);
             } else if (enc_algo == ENC_RC4) {
-                mem_encrypt_rc4((uint8_t *)write_buf, write_size, enc_key);
+                rc4_crypt(&rc4_ctx, (uint8_t *)write_buf, write_size);
             } else if (enc_algo == ENC_AES_MOCK) {
-                mem_encrypt_aes_mock((uint8_t *)write_buf, write_size, enc_key);
+                size_t key_len = strlen(enc_key);
+                if (key_len > 0) {
+                    for (int pass = 0; pass < 3; pass++) {
+                        for (size_t i = 0; i < write_size; i++) {
+                            write_buf[i] ^= enc_key[(xor_offset + i) % key_len];
+                        }
+                    }
+                    xor_offset += write_size;
+                }
+                rc4_crypt(&rc4_ctx, (uint8_t *)write_buf, write_size);
             }
+        }
+
+        /* 5.2 Protocolo de Framing: Guardamos un Header con el tamaño del bloque comprimido */
+        if ((flags & SCOPY_COMPRESS) && !(flags & SCOPY_RESTORE)) {
+            uint32_t chunk_size = (uint32_t)write_size;
+            ssize_t w = write(fd_dest, &chunk_size, sizeof(chunk_size));
+            if (w > 0) total_bytes += w;
         }
 
         /* Escribir exactamente los bytes procesados/leídos */
@@ -407,6 +479,9 @@ int sys_smart_copy(const char *src, const char *dest,
     /* --- 6. Cerrar descriptores siempre (sin importar el resultado) --- */
     close(fd_src);
     close(fd_dest);
+
+    /* 8. Destrucción segura del estado de cifrado en RAM */
+    if (flags & SCOPY_ENCRYPT) secure_zero(&rc4_ctx, sizeof(rc4_ctx));
 
     /* --- 7. Actualizar estadísticas y log --- */
     if (ret == SC_OK) {
